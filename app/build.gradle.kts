@@ -50,6 +50,18 @@ ksp {
 }
 
 dependencies {
+    // 本工程模块（依赖方向见 02 §2，由 checkModuleDependencies 强制）
+    implementation(project(":core:common"))
+    implementation(project(":core:storage"))
+    implementation(project(":core:data"))
+    implementation(project(":core:llm"))
+    implementation(project(":core:playback"))
+    implementation(project(":core:ui"))
+    implementation(project(":feature:library"))
+    implementation(project(":feature:search"))
+    implementation(project(":feature:player"))
+    implementation(project(":feature:mine"))
+
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.core)
