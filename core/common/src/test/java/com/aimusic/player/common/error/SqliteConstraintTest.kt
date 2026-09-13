@@ -30,6 +30,17 @@ class SqliteConstraintTest {
     }
 
     @Test
+    fun `实体身份键冲突单独成类，不混进重复文件`() {
+        // 11 §6.2：song_entity(canonical_title, artists_key) 冲突的业务语义是「复用已有实体」，
+        // 与 music_file.path 的「已存在跳过」是两回事，不能共用一个类型。
+        assertThat(
+            SqliteConstraint.parse(
+                "UNIQUE constraint failed: song_entity.canonical_title, song_entity.artists_key"
+            )?.type,
+        ).isEqualTo(ConflictType.DUPLICATE_ENTITY)
+    }
+
+    @Test
     fun `非约束报文返回 null，不猜语义`() {
         assertThat(SqliteConstraint.parse(null)).isNull()
         assertThat(SqliteConstraint.parse("disk I/O error")).isNull()

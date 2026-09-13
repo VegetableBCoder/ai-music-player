@@ -3,7 +3,9 @@ package com.aimusic.player.data.db
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import com.aimusic.player.data.dao.CategoryDao
 import com.aimusic.player.data.dao.SongDao
+import com.aimusic.player.data.dao.TagDao
 import com.aimusic.player.data.entity.AnalysisRunEntity
 import com.aimusic.player.data.entity.AnalysisRunFileCrossRef
 import com.aimusic.player.data.entity.CategoryEntity
@@ -47,4 +49,8 @@ import com.aimusic.player.data.entity.TagEntity
 abstract class MusicDatabase : RoomDatabase() {
 
     abstract fun songDao(): SongDao
+
+    abstract fun tagDao(): TagDao
+
+    abstract fun categoryDao(): CategoryDao
 }

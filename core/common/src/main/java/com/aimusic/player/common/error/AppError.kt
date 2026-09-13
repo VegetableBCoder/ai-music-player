@@ -87,7 +87,7 @@ data class NotFoundError(
 
 enum class ConflictType {
     DUPLICATE_FILE, DUPLICATE_LYRIC, DUPLICATE_TAG,
-    TAG_HAS_SONGS, CATEGORY_HAS_TAGS, DUPLICATE_SOURCE
+    DUPLICATE_ENTITY, TAG_HAS_SONGS, CATEGORY_HAS_TAGS, DUPLICATE_SOURCE
 }
 data class ConflictError(
     val conflict: ConflictType,

@@ -17,6 +17,9 @@ data class SqliteConstraint(val type: ConflictType, val detail: String) {
                 "tag.name" in cols        -> ConflictType.DUPLICATE_TAG
                 "entity_tag" in cols      -> ConflictType.DUPLICATE_TAG
                 "scan_source" in cols     -> ConflictType.DUPLICATE_SOURCE
+                // song_entity 的身份键（canonical_title + artists_key）冲突：语义是
+                // 「复用已有实体」（11 §6.2），不是「重复文件」，故单独成类。
+                "song_entity" in cols     -> ConflictType.DUPLICATE_ENTITY
                 else                      -> ConflictType.DUPLICATE_FILE
             }
             // detail 仅保留表/列名，剔除可能含路径的值
