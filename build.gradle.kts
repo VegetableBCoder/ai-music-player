@@ -81,3 +81,39 @@ gradle.projectsEvaluated {
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// instrumented 测试名不得含空格
+//
+// Kotlin 反引号名会变成方法名，而 DEX 040（minSdk ≥ 30）之前不允许方法名带空格。
+// 本项目 minSdk = 26，带空格会让 D8 在 dexBuilderDebugAndroidTest 阶段失败，而且报错
+// 被 AGP 吞成一句 “Failed to process: ...dirs”，只能加 --stacktrace 才看得到真因。
+// 这个坑踩了两次，所以落成配置期检查（见 docs/技术方案/01 §2.2 第 15 条）。
+// ---------------------------------------------------------------------------
+gradle.projectsEvaluated {
+    val backtickFun = Regex("""fun\s+`([^`]*)`""")
+    val offending = mutableListOf<String>()
+
+    rootProject.allprojects.forEach { target ->
+        val androidTestDir = target.file("src/androidTest")
+        if (androidTestDir.isDirectory) {
+            androidTestDir.walkTopDown()
+                .filter { it.isFile && it.extension == "kt" }
+                .forEach { file ->
+                    backtickFun.findAll(file.readText()).forEach { match ->
+                        val name = match.groupValues[1]
+                        if (name.contains(' ')) {
+                            offending += "  ✗ ${target.path} ${file.name}: `fun $name`"
+                        }
+                    }
+                }
+        }
+    }
+
+    if (offending.isNotEmpty()) {
+        throw GradleException(
+            "instrumented 测试名含空格会令 D8 dex 失败（DEX 040 之前不允许）。请把空格改成 `_`：\n" +
+                offending.joinToString("\n"),
+        )
+    }
+}

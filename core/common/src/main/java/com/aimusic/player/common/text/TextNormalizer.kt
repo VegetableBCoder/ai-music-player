@@ -41,7 +41,11 @@ object TextNormalizer {
     fun splitArtists(raw: String): List<String> =
         ARTIST_SPLIT.split(raw).map(::normalizeToken).filter { it.isNotEmpty() }.distinct().sorted()
 
+    /** 归一化演唱者集合：逐个归一、去重、按 Unicode 码位排序。 */
+    fun normalizeArtists(artists: List<String>): List<String> =
+        artists.map(::normalizeToken).distinct().sorted()
+
     /** 与 `song_entity.artists_key` 同构：排序去重后以 U+001F 连接。 */
     fun artistsKey(artists: List<String>): String =
-        artists.map(::normalizeToken).distinct().sorted().joinToString("\u001F")
+        normalizeArtists(artists).joinToString("\u001F")
 }
