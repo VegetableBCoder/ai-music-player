@@ -13,16 +13,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import com.aimusic.player.probe.ProbeDao
 import dagger.hilt.android.AndroidEntryPoint
-import javax.inject.Inject
 
+/** 导航图与真实界面在 Phase 8 落地；这里保留一个可启动的占位。 */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-
-    // 探针：能编译即证明 Hilt 注解处理生效
-    @Inject
-    lateinit var probeDao: ProbeDao
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

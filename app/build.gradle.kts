@@ -45,10 +45,6 @@ kotlin {
     }
 }
 
-ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
-}
-
 dependencies {
     // 本工程模块（依赖方向见 02 §2，由 checkModuleDependencies 强制）
     implementation(project(":core:common"))
@@ -75,24 +71,8 @@ dependencies {
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 
-    // —— Phase 0.2 / 0.3 技术验证：KSP + Room + Hilt ——
-    implementation(libs.androidx.room.runtime)
-    implementation(libs.androidx.room.ktx)
-    ksp(libs.androidx.room.compiler)
-
+    // Hilt：应用入口与 DI 聚合（@HiltAndroidApp / @AndroidEntryPoint）。
+    // Room 已归 :core:data（DB 定义在那里），:app 不再直接依赖 Room。
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
-
-    // —— Phase 0.4 验证：测试栈 ——
-    testImplementation(libs.junit)
-    testImplementation(libs.kotlinx.coroutines.test)
-    testImplementation(libs.turbine)
-    testImplementation(libs.mockk)
-    testImplementation(libs.truth)
-
-    androidTestImplementation(libs.androidx.test.ext.junit)
-    androidTestImplementation(libs.androidx.test.core)
-    androidTestImplementation(libs.androidx.test.runner)
-    androidTestImplementation(libs.androidx.room.testing)
-    androidTestImplementation(libs.kotlinx.coroutines.test)
 }
