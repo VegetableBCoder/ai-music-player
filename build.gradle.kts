@@ -83,14 +83,26 @@ gradle.projectsEvaluated {
 }
 
 // ---------------------------------------------------------------------------
-// instrumented 测试名不得含空格
+// instrumented 测试名必须是 DEX 能表示的方法名
 //
-// Kotlin 反引号名会变成方法名，而 DEX 040（minSdk ≥ 30）之前不允许方法名带空格。
-// 本项目 minSdk = 26，带空格会让 D8 在 dexBuilderDebugAndroidTest 阶段失败，而且报错
-// 被 AGP 吞成一句 “Failed to process: ...dirs”，只能加 --stacktrace 才看得到真因。
-// 这个坑踩了两次，所以落成配置期检查（见 docs/技术方案/01 §2.2 第 15 条）。
+// Kotlin 的反引号名什么字符都能写，但它最终要变成 DEX 的方法名，而 DEX 的 SimpleName
+// 只允许一个很窄的字符集（见 DEX 格式规范）：
+//     A-Z a-z 0-9 $ - _  以及
+//     0x00A1-0x1FFF、0x2010-0x2027、0x2030-0xD7FF、0xE000-0xFFEF
+// 中文落在 0x2030-0xD7FF，所以中文名没问题；但**空格**、`+`、`.`、`<`、`>` 等一律不行。
+// 违反时 D8 报 "Method name '...' cannot be represented in dex format"，且报错被 AGP
+// 吞成一句 "Failed to process: ...dirs"，只能加 --stacktrace 才看得到真名。
+//
+// 这个坑踩过两次（先是空格，后是 `+`），所以落成配置期检查，不再靠记性。
 // ---------------------------------------------------------------------------
 gradle.projectsEvaluated {
+    fun isDexSafe(code: Int): Boolean = when (code) {
+        in 'A'.code..'Z'.code, in 'a'.code..'z'.code, in '0'.code..'9'.code -> true
+        '$'.code, '-'.code, '_'.code -> true
+        in 0x00A1..0x1FFF, in 0x2010..0x2027, in 0x2030..0xD7FF, in 0xE000..0xFFEF -> true
+        else -> false
+    }
+
     val backtickFun = Regex("""fun\s+`([^`]*)`""")
     val offending = mutableListOf<String>()
 
@@ -102,8 +114,13 @@ gradle.projectsEvaluated {
                 .forEach { file ->
                     backtickFun.findAll(file.readText()).forEach { match ->
                         val name = match.groupValues[1]
-                        if (name.contains(' ')) {
-                            offending += "  ✗ ${target.path} ${file.name}: `fun $name`"
+                        val bad = mutableListOf<Char>()
+                        for (ch in name) {
+                            if (!isDexSafe(ch.code) && ch !in bad) bad += ch
+                        }
+                        if (bad.isNotEmpty()) {
+                            val shown = bad.joinToString("") { ch -> "「$ch」" }
+                            offending += "  ✗ ${target.path} ${file.name}: `fun $name` 含非法字符 $shown"
                         }
                     }
                 }
@@ -112,8 +129,8 @@ gradle.projectsEvaluated {
 
     if (offending.isNotEmpty()) {
         throw GradleException(
-            "instrumented 测试名含空格会令 D8 dex 失败（DEX 040 之前不允许）。请把空格改成 `_`：\n" +
-                offending.joinToString("\n"),
+            "instrumented 测试名含 DEX 无法表示的字符，会让 D8 在 dexBuilder 阶段失败。" +
+                "请用 `_` 代替（中文本身是允许的）：\n" + offending.joinToString("\n"),
         )
     }
 }

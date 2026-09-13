@@ -31,6 +31,23 @@ abstract class SongDao {
     @Query("DELETE FROM song_entity WHERE id = :entityId")
     abstract suspend fun deleteSongById(entityId: Long)
 
+    /**
+     * 展示字段刷新（`03 §4.3`）：回填专辑信息并**作废封面缓存路径**（由封面仓库下次访问时重建）。
+     *
+     * 取值（代表文件的内嵌元数据）由调用方传入，本方法只负责确定性写入。
+     * 单条 `UPDATE` 本身就是原子的，不需要额外的 `@Transaction` 包裹。
+     */
+    @Query(
+        "UPDATE song_entity SET album_name = :albumName, album_artist = :albumArtist, " +
+            "album_release_date = :albumReleaseDate, cover_cache_path = NULL WHERE id = :entityId",
+    )
+    abstract suspend fun refreshDisplayFields(
+        entityId: Long,
+        albumName: String?,
+        albumArtist: String?,
+        albumReleaseDate: String?,
+    )
+
     @Query("UPDATE song_entity SET play_count = play_count + 1, last_played_at = :now WHERE id = :id")
     abstract suspend fun bumpPlayCount(id: Long, now: Long)
 

@@ -3,7 +3,16 @@ package com.aimusic.player.data.db
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import com.aimusic.player.data.dao.AnalysisRunDao
 import com.aimusic.player.data.dao.CategoryDao
+import com.aimusic.player.data.dao.LlmCacheDao
+import com.aimusic.player.data.dao.LyricDao
+import com.aimusic.player.data.dao.MusicFileDao
+import com.aimusic.player.data.dao.PlayHistoryDao
+import com.aimusic.player.data.dao.PlaybackStateDao
+import com.aimusic.player.data.dao.QueueDao
+import com.aimusic.player.data.dao.ScanSourceDao
+import com.aimusic.player.data.dao.SongArtistDao
 import com.aimusic.player.data.dao.SongDao
 import com.aimusic.player.data.dao.TagDao
 import com.aimusic.player.data.entity.AnalysisRunEntity
@@ -53,4 +62,22 @@ abstract class MusicDatabase : RoomDatabase() {
     abstract fun tagDao(): TagDao
 
     abstract fun categoryDao(): CategoryDao
+
+    abstract fun musicFileDao(): MusicFileDao
+
+    abstract fun lyricDao(): LyricDao
+
+    abstract fun songArtistDao(): SongArtistDao
+
+    abstract fun queueDao(): QueueDao
+
+    abstract fun playbackStateDao(): PlaybackStateDao
+
+    abstract fun playHistoryDao(): PlayHistoryDao
+
+    abstract fun analysisRunDao(): AnalysisRunDao
+
+    abstract fun scanSourceDao(): ScanSourceDao
+
+    abstract fun llmCacheDao(): LlmCacheDao
 }
