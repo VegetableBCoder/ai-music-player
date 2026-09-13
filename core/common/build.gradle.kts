@@ -25,4 +25,7 @@ kotlin {
 dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Phase 1 这批类是纯 Kotlin（无 Android import），全部走 JVM 单测
+    testImplementation(project(":core:testing"))
 }
