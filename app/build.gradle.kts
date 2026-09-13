@@ -16,6 +16,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -51,6 +52,8 @@ ksp {
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.core.ktx)
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.ui)
@@ -67,4 +70,17 @@ dependencies {
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
+
+    // —— Phase 0.4 验证：测试栈 ——
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.turbine)
+    testImplementation(libs.mockk)
+    testImplementation(libs.truth)
+
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.room.testing)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }
