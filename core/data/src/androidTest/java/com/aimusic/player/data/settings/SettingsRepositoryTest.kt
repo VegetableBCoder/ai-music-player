@@ -92,6 +92,8 @@ class SettingsRepositoryTest {
         assertThat(filter.acceptsDuration(60_000L)).isTrue()
         assertThat(filter.acceptsSize(102_399L)).isFalse()
         assertThat(filter.acceptsSize(102_400L)).isTrue()
+        // 时长未知（reader 的哨兵）不判、放行：读不出时长不等于「太短」
+        assertThat(filter.acceptsDuration(0L)).isTrue()
 
         // 关掉一条就把该条写成 0：这条不再设限，另一条照旧（两条相互独立）
         repo.setScanFilter(minDurationMs = 0L, minSizeBytes = 102_400L)

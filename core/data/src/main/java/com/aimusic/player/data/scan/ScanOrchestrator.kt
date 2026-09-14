@@ -19,6 +19,7 @@ import com.aimusic.player.data.model.AnalysisStatus
 import com.aimusic.player.data.model.LyricSource
 import com.aimusic.player.data.model.RunStatus
 import com.aimusic.player.data.model.SourceKind
+import com.aimusic.player.data.settings.ScanFilter
 import com.aimusic.player.data.settings.SettingsRepository
 import com.aimusic.player.storage.AudioFormats
 import com.aimusic.player.storage.FileRef
@@ -39,6 +40,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 
@@ -134,8 +136,13 @@ class ScanOrchestrator(
             runningJob = currentCoroutineContext()[Job]
             stateFlow.update { it.copy(phase = ScanPhase.SCANNING) }
 
+            // 过滤规则读一次、两条通道共用（需求 `../需求文档/01-歌曲库管理.md` §2.5）
+            val filter = settings.scanFilter.first()
+
             val scanned = if (level == StorageAccessLevel.MEDIA_LIBRARY_ONLY) {
                 mediaStoreAudio.query { n -> stateFlow.update { s -> s.copy(discovered = n) } }
+                    .filter { filter.acceptsSize(it.ref.size) }
+                    .filter { filter.acceptsDuration(it.metadata.durationMs) }
                     .map { entry ->
                         ScannedFile(
                             ref = entry.ref,
@@ -145,7 +152,7 @@ class ScanOrchestrator(
                         )
                     }
             } else {
-                extractMetadataPipelined(music.map { it.path })
+                extractMetadataPipelined(music.map { it.path }, filter)
             }
 
             stateFlow.update { it.copy(phase = ScanPhase.DIFFING) }
@@ -158,13 +165,13 @@ class ScanOrchestrator(
                 lrcCount = diff.lrcCandidates.size,
             )
 
+            // `discovered` 不在结尾被改写：它是**遍历计数**（§4.6），表达「扫到几个文件」，
+            // 含被过滤挡下的那些；「找到几首能用的」由 `diff.newFiles` 表达，两者不是一回事。
             return if (diff.newFiles.isEmpty() && diff.cleanedPaths.isEmpty()) {
-                stateFlow.update { it.copy(phase = ScanPhase.IDLE, diff = null, discovered = scanned.size) }
+                stateFlow.update { it.copy(phase = ScanPhase.IDLE, diff = null) }
                 ScanOutcome.NoChanges(summary)
             } else {
-                stateFlow.update {
-                    it.copy(phase = ScanPhase.AWAITING_USER, diff = diff, discovered = scanned.size)
-                }
+                stateFlow.update { it.copy(phase = ScanPhase.AWAITING_USER, diff = diff) }
                 ScanOutcome.AwaitingUser(summary)
             }
         } catch (e: CancellationException) {
@@ -283,25 +290,41 @@ class ScanOrchestrator(
 
     // —— 内部：遍历与元数据流水线（04 §4.5） ——
 
-    private suspend fun extractMetadataPipelined(roots: List<String>): List<ScannedFile> =
+    /**
+     * 过滤分两段落下（`04 §4.6`）：**体积在遍历阶段**、**时长在元数据之后**。
+     *
+     * `discovered` 仍是「遍历扫到几个文件」（进度语义，含被挡下来的）——
+     * 「找到几首能用的」由 `diff.newFiles` 表达，两者不是一回事。
+     */
+    private suspend fun extractMetadataPipelined(
+        roots: List<String>,
+        filter: ScanFilter,
+    ): List<ScannedFile> =
         coroutineScope {
             val gate = Dispatchers.IO.limitedParallelism(parallelism)
             storage.listFiles(roots, AudioFormats.AUDIO_EXTS) { n ->
                 stateFlow.update { it.copy(discovered = n) }
-            }.map { ref ->
-                async(gate) {
-                    ensureActive()
-                    // 超时与降级都归 metadataReader 自己（§4.4 落地补充）
-                    val metadata = metadataReader.read(ref)
-                    stateFlow.update { it.copy(metadataProcessed = it.metadataProcessed + 1) }
-                    ScannedFile(
-                        ref = ref,
-                        normalizedPath = PathNormalizer.normalize(ref.path, primaryRoot),
-                        format = AudioFormats.formatOf(ref.name),
-                        metadata = metadata,
-                    )
-                }
-            }.toList().awaitAll()
+            }
+                // 体积先挡：`FileRef.size` 现成，碎片文件连元数据都不必解
+                .filter { filter.acceptsSize(it.size) }
+                .map { ref ->
+                    async(gate) {
+                        ensureActive()
+                        // 超时与降级都归 metadataReader 自己（§4.4 落地补充）
+                        val metadata = metadataReader.read(ref)
+                        stateFlow.update { it.copy(metadataProcessed = it.metadataProcessed + 1) }
+                        if (!filter.acceptsDuration(metadata.durationMs)) {
+                            null
+                        } else {
+                            ScannedFile(
+                                ref = ref,
+                                normalizedPath = PathNormalizer.normalize(ref.path, primaryRoot),
+                                format = AudioFormats.formatOf(ref.name),
+                                metadata = metadata,
+                            )
+                        }
+                    }
+                }.toList().awaitAll().filterNotNull()
         }
 
     // —— 内部：.lrc 候选登记（04 §4.7） ——

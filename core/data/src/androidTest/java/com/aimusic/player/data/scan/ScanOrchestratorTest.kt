@@ -96,17 +96,17 @@ class ScanOrchestratorTest {
         now = { NOW },
     )
 
-    private fun defaultReader() = MetadataReader { ref ->
-        AudioMetadata(
-            title = ref.name,
-            artist = "周杰伦",
-            album = albumOfReader,
-            albumArtist = "周杰伦",
-            date = "2003",
-            durationMs = 1000,
-            hasEmbeddedPicture = false,
-        )
-    }
+    private fun defaultMetadata(ref: FileRef) = AudioMetadata(
+        title = ref.name,
+        artist = "周杰伦",
+        album = albumOfReader,
+        albumArtist = "周杰伦",
+        date = "2003",
+        durationMs = SONG_DURATION,
+        hasEmbeddedPicture = false,
+    )
+
+    private fun defaultReader() = MetadataReader { ref -> defaultMetadata(ref) }
 
     @After
     fun tearDown() {
@@ -129,9 +129,30 @@ class ScanOrchestratorTest {
         )
     }
 
-    private fun onDisk(path: String) {
-        storage.refs += FileRef(path, path.substringAfterLast('/'), 10, 0)
+    /**
+     * 夹具用**真实量级**的歌曲（4 MB / 3 分钟），不是 10 字节 / 1 秒。
+     * 因为扫描过滤默认开启（需求 `01 §2.5`），不合理的小夹具会被过滤器挡掉，
+     * 到期用例会因为「夹具不真实」而红，误导成产品有问题。
+     */
+    private fun onDisk(path: String, size: Long = SONG_SIZE) {
+        storage.refs += FileRef(path, path.substringAfterLast('/'), size, 0)
         storage.existing += path
+    }
+
+    /** 降级通道的条目：路径与元数据一起来自媒体库。 */
+    private fun onDiskViaStore(path: String, size: Long = SONG_SIZE, durationMs: Long = SONG_DURATION) {
+        mediaStore.entries += MediaStoreAudioEntry(
+            ref = FileRef(path, path.substringAfterLast('/'), size, 0),
+            metadata = AudioMetadata(
+                title = path.substringAfterLast('/'),
+                artist = "周杰伦",
+                album = albumOfReader,
+                albumArtist = "周杰伦",
+                date = "2003",
+                durationMs = durationMs,
+                hasEmbeddedPicture = false,
+            ),
+        )
     }
 
     // —— 门禁与守卫 ——
@@ -383,10 +404,7 @@ class ScanOrchestratorTest {
         access.level = StorageAccessLevel.MEDIA_LIBRARY_ONLY
         addMusicSource()
         addLyricSource("$root/Lyrics")
-        mediaStore.entries += MediaStoreAudioEntry(
-            ref = FileRef("$musicDir/fromStore.mp3", "fromStore.mp3", 10, 0),
-            metadata = AudioMetadata("来自媒体库", "歌手", null, null, null, 2000, false),
-        )
+        onDiskViaStore("$musicDir/fromStore.mp3")
 
         val scanned = orchestrator.scan() as ScanOutcome.AwaitingUser
 
@@ -412,8 +430,121 @@ class ScanOrchestratorTest {
         assertThat(db.countOf("music_file")).isEqualTo(1)
     }
 
+    // —— 扫描过滤（需求 01 §2.5） ——
+
+    @Test
+    fun `过滤_体积不足的不读元数据也不进比对`() = runDbTest {
+        addMusicSource()
+        onDisk("$musicDir/tiny.mp3", size = 1_000L)
+        onDisk("$musicDir/song.mp3")
+        val read = mutableListOf<String>()
+        orchestrator = build(MetadataReader { ref ->
+            read += ref.name
+            defaultMetadata(ref)
+        })
+
+        val scanned = orchestrator.scan() as ScanOutcome.AwaitingUser
+
+        // 体积在遍历阶段就挡：连元数据都不该去解（小文件往往是碎片，解码纯浪费）
+        assertThat(read.toSet()).containsExactly("song.mp3")
+        assertThat(scanned.summary.newCount).isEqualTo(1)
+        // 遍历计数仍是「扫到几个」（进度语义），被挡下来的也扫到过
+        assertThat(orchestrator.state.value.discovered).isEqualTo(2)
+    }
+
+    @Test
+    fun `过滤_时长不足的读了元数据但入库_且不算已存在跳过`() = runDbTest {
+        addMusicSource()
+        onDisk("$musicDir/ringtone.mp3")
+        onDisk("$musicDir/song.mp3")
+        val read = mutableListOf<String>()
+        orchestrator = build(MetadataReader { ref ->
+            read += ref.name
+            defaultMetadata(ref).copy(
+                durationMs = if (ref.name == "ringtone.mp3") 5_000L else SONG_DURATION,
+            )
+        })
+
+        val scanned = orchestrator.scan() as ScanOutcome.AwaitingUser
+
+        // 时长只有解出元数据才知道，所以这个文件**必须**被读过
+        assertThat(read.toSet()).containsExactly("ringtone.mp3", "song.mp3")
+        assertThat(scanned.summary.newCount).isEqualTo(1)
+        // 被过滤 ≠ 已在库里：skippedCount 的语义是「库中已有」，混进来会让「跳过 N 首」没法解释
+        assertThat(scanned.summary.skippedCount).isEqualTo(0)
+        // 也不该出现在差异里
+        assertThat(orchestrator.state.value.diff?.newFiles?.map { it.ref.name })
+            .containsExactly("song.mp3")
+    }
+
+    @Test
+    fun `过滤_时长未知的不挡_不能把读不出时长当成太短`() = runDbTest {
+        addMusicSource()
+        onDisk("$musicDir/broken.mp3")
+        orchestrator = build(MetadataReader { ref ->
+            AudioMetadata(ref.name, null, null, null, null, 0L, false)
+        })
+
+        val scanned = orchestrator.scan() as ScanOutcome.AwaitingUser
+
+        // 0 是「时长未知」的哨兵，不是「0 秒」。验证不了就不判、放行
+        // ——与 04 §4.6「验证不了存在性就不清理」同一原则
+        assertThat(scanned.summary.newCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `过滤_降级通道走媒体库时同样生效`() = runDbTest {
+        access.level = StorageAccessLevel.MEDIA_LIBRARY_ONLY
+        addMusicSource()
+        onDiskViaStore("$musicDir/tiny.mp3", size = 1_000L)
+        onDiskViaStore("$musicDir/ringtone.mp3", durationMs = 5_000L)
+        onDiskViaStore("$musicDir/song.mp3")
+
+        val scanned = orchestrator.scan() as ScanOutcome.AwaitingUser
+
+        assertThat(scanned.summary.newCount).isEqualTo(1)
+        assertThat(storage.listFilesCalls).isEqualTo(0)
+    }
+
+    @Test
+    fun `过滤_关掉规则后不再设限`() = runDbTest {
+        addMusicSource()
+        onDisk("$musicDir/tiny.mp3", size = 1_000L)
+        settings.setScanFilter(minDurationMs = 0L, minSizeBytes = 0L)
+        orchestrator = build(MetadataReader { ref ->
+            defaultMetadata(ref).copy(durationMs = 5_000L)
+        })
+
+        val scanned = orchestrator.scan() as ScanOutcome.AwaitingUser
+
+        assertThat(scanned.summary.newCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `过滤_两条规则相互独立_关一条不影响另一条`() = runDbTest {
+        addMusicSource()
+        onDisk("$musicDir/tiny.mp3", size = 1_000L) // 体积不合格
+        onDisk("$musicDir/short.mp3") // 体积合格，但时长只有 5 秒
+        settings.setScanFilter(minDurationMs = 0L, minSizeBytes = 102_400L)
+        orchestrator = build(MetadataReader { ref ->
+            defaultMetadata(ref).copy(durationMs = 5_000L)
+        })
+
+        val scanned = orchestrator.scan() as ScanOutcome.AwaitingUser
+
+        // 时长规则关了 → 5 秒的文件放行；体积规则还在 → 1 KB 的照样挡。
+        // 正是「关一条不动另一条」的证据。
+        assertThat(scanned.summary.newCount).isEqualTo(1)
+        assertThat(orchestrator.state.value.diff?.newFiles?.map { it.ref.name })
+            .containsExactly("short.mp3")
+    }
+
     private companion object {
         const val NOW = 1_700_000_000_000L
+
+        /** 真实量级的夹具：4 MB / 3 分钟，两条默认过滤规则都过得去。 */
+        const val SONG_SIZE = 4_000_000L
+        const val SONG_DURATION = 180_000L
     }
 }
 

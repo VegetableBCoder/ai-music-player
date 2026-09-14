@@ -51,8 +51,16 @@ data class ScanFilter(
     /** 体积可以在**遍历阶段**就判定（`FileRef.size` 现成，不必解元数据）。 */
     fun acceptsSize(size: Long): Boolean = minSizeBytes <= 0L || size >= minSizeBytes
 
-    /** 时长只有解出元数据才知道，故分两段判定（`04 §4.6`）。 */
-    fun acceptsDuration(durationMs: Long): Boolean = minDurationMs <= 0L || durationMs >= minDurationMs
+    /**
+     * 时长只有解出元数据才知道，故分两段判定（`04 §4.6`）。
+     *
+     * `durationMs <= 0` 是**时长未知**（reader 读不出时的哨兵，`03 §2.2` 的语义），
+     * 不是「0 秒」：读不出就不判、放行。否则一次解码降级会把整批文件悄悄挡掉，
+     * 用户只看到「扫到 200 个，一个都没添加」而毫无线索 —— 与
+     * `04 §4.6`「验证不了存在性就不清理」是同一条原则。
+     */
+    fun acceptsDuration(durationMs: Long): Boolean =
+        minDurationMs <= 0L || durationMs <= 0L || durationMs >= minDurationMs
 }
 
 /**
