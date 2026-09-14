@@ -26,6 +26,46 @@ class FileStorageSourceTest {
         onWarning = { warnings += it },
     )
 
+    // —— 列子目录（供应用内目录浏览器，3e 新增） ——
+
+    @Test
+    fun `列子目录_只返回直属子目录_按名称排序_排除隐藏目录`() {
+        temp.newFolder("Music")
+        temp.newFolder("Music/AlbumB")
+        temp.newFolder("Music/AlbumA")
+        temp.newFolder("Music/.hidden")
+        touch("Music/AlbumA/song.mp3")
+        touch("Music/readme.txt")
+
+        val dirs = source().listDirectories(File(temp.root, "Music").absolutePath)
+
+        assertThat(dirs.map { it.name }).containsExactly("AlbumA", "AlbumB").inOrder()
+        assertThat(dirs.map { it.path }).containsExactly(
+            File(temp.root, "Music/AlbumA").absolutePath,
+            File(temp.root, "Music/AlbumB").absolutePath,
+        ).inOrder()
+    }
+
+    @Test
+    fun `列子目录_不存在或不是目录时返回空_不抛异常`() {
+        val notADirectory = touch("song.mp3")
+
+        assertThat(source().listDirectories(File(temp.root, "不存在").absolutePath)).isEmpty()
+        assertThat(source().listDirectories(notADirectory.absolutePath)).isEmpty()
+    }
+
+    @Test
+    fun `列子目录_排除系统目录_Android_data 与 obb 不显示`() {
+        temp.newFolder("sdcard/Android/data")
+        temp.newFolder("sdcard/Android/obb")
+        temp.newFolder("sdcard/Android/media")
+
+        val dirs = source().listDirectories(File(temp.root, "sdcard/Android").absolutePath)
+
+        // media 下有应用数据但它本身是正常可浏览的；data / obb 是黑名单
+        assertThat(dirs.map { it.name }).containsExactly("media")
+    }
+
     private fun touch(relative: String, content: String = "x"): File {
         val f = File(temp.root, relative)
         f.parentFile?.mkdirs()

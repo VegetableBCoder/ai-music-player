@@ -75,6 +75,34 @@ class FileStorageSource(
 
     override fun isDirectory(path: String): Boolean = File(path).isDirectory
 
+    /**
+     * 直属子目录（目录浏览器用）。
+     *
+     * 复用 `listFiles` 的同一套黑名单（隐藏目录 + 系统目录），否则浏览器里会出现一堆
+     * 用户点进去也看不懂、扫也扫不出东西的目录。**不递归**、按名称排序、出错返回空。
+     */
+    override fun listDirectories(parent: String): List<FileRef> {
+        val dir = File(parent)
+        if (!dir.isDirectory) return emptyList()
+
+        val children = try {
+            dir.listFiles()
+        } catch (e: SecurityException) {
+            onWarning("不可读目录（权限）：${dir.absolutePath}（${e.javaClass.simpleName}）")
+            null
+        } catch (e: IOException) {
+            onWarning("跳过目录：${dir.absolutePath}（${e.javaClass.simpleName}）")
+            null
+        } ?: return emptyList()
+
+        return children
+            .asSequence()
+            .filter { it.isDirectory && !it.name.startsWith(".") && !isSystemDir(it) }
+            .map { FileRef(path = it.absolutePath, name = it.name, size = 0L, lastModified = it.lastModified()) }
+            .sortedBy { it.name }
+            .toList()
+    }
+
     override fun size(path: String): Long = File(path).length()
 
     override fun readBytes(path: String, maxBytes: Int): ByteArray {

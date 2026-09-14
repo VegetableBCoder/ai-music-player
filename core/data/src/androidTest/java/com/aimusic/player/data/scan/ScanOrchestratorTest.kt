@@ -579,6 +579,7 @@ private class FakeStorage : StorageSource {
 
     override fun exists(path: String) = path in existing
     override fun isDirectory(path: String) = path in dirs
+    override fun listDirectories(parent: String) = emptyList<FileRef>()
     override fun size(path: String) = 0L
     override fun readBytes(path: String, maxBytes: Int) = ByteArray(0)
     override fun canWrite() = true

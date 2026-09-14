@@ -1,5 +1,8 @@
 plugins {
     alias(libs.plugins.android.library)
+    // Hilt：`StorageModule`（10 §5.4）要绑 StorageSource / MetadataReader / 权限判定
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt)
 }
 
 android {
@@ -28,6 +31,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)
+
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
 
     // 3a 这批（路径规范化 / 白名单 / 目录遍历 / 权限决策）都是纯逻辑，全部走 JVM 单测
     testImplementation(project(":core:testing"))

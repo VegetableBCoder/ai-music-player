@@ -18,6 +18,21 @@ interface StorageSource {
      * 明令禁止业务层直接碰文件系统。
      */
     fun isDirectory(path: String): Boolean
+
+    /**
+     * 列**直属子目录**（应用内目录浏览器用，3e 新增）。
+     *
+     * 与 `isDirectory` 同因：浏览器要在不碰 `java.io.File` 的前提下枚举目录（`04 §1.2`）。
+     * 契约：
+     * - 只返回下一层，**不递归**（递归浏览由 UI 逐层下钻完成）
+     * - 按 `name` 升序，结果确定（否则每次进同一个目录顺序都不一样）
+     * - 排除隐藏目录（`.` 开头）与系统目录（`Android/data`、`Android/obb` 等，与 `listFiles` 同一黑名单）
+     * - 路径不存在 / 不是目录 / 不可读 → **返回空**，不抛异常
+     *
+     * 目录的 `FileRef.size` 无意义（返回 0）；需要判断「有没有歌」得另外扫。
+     */
+    fun listDirectories(parent: String): List<FileRef>
+
     fun size(path: String): Long
     fun readBytes(path: String, maxBytes: Int = 1 shl 20): ByteArray
 

@@ -23,6 +23,9 @@ object ErrorText {
         "scan.diff.found" to "发现 {new} 个新文件（新增 {new} / 已存在跳过 {skipped} / 已删除清理 {cleaned}）",
         "scan.diff.none" to "未发现新文件",
         "scan.empty" to "没有扫描到音乐",
+        "scan.one_click.empty" to "没有找到常见的音乐目录，请手动选择",
+        "scan.committed" to "已提交 {count} 首，分析待后续版本",
+        "scan.commit.cancelled" to "提交已取消，已添加的文件保留",
 
         // —— 分析（05 §2）——
         "analysis.running" to "正在分析（{done}/{total}）",

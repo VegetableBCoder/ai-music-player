@@ -1,6 +1,9 @@
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.compose)
+    // @HiltViewModel 需要 KSP + Hilt 插件
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt)
 }
 
 android {
@@ -33,4 +36,12 @@ dependencies {
     implementation(project(":core:llm"))
     implementation(project(":core:playback"))
     implementation(project(":core:ui"))
+    // 应用内目录浏览器要直接列目录（02 §2 的落地补充（3e））
+    implementation(project(":core:storage"))
+
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.hilt.android)
+    implementation(libs.androidx.hilt.navigation.compose)
+    ksp(libs.hilt.compiler)
 }

@@ -1,5 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ========== 存储：所有文件访问（V1 锁定决策，见 01 §5） ========== -->
+    <!-- 任意目录扫描 / 外部歌词目录 / 物理删除 均依赖它；侧载分发下由用户手动在系统设置开启（API 30+） -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <!-- Android 13(API 33)+ 细粒度媒体读取：未授予"所有文件访问"时的降级路径 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+    <!-- Android 12(API 32) 及以下的 legacy 读取（上限 32 由系统保证不再向 33+ 申请） -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!-- 通知（Android 13+ 运行时权限，可选但推荐） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 前台服务（媒体播放） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14(API 34)+ 强制：前台服务类型与权限必须成对声明 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- 播放期间保持 CPU 唤醒（Media3/ExoPlayer 内部持有 WakeLock） -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- BYOK 直连 LLM（01 §3）与共享缓存校验 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      以上为 10 §3.1 的完整权限清单。其中带消费者的部分在 3e 起生效；`FOREGROUND_SERVICE*`
+      与 `WAKE_LOCK` 的消费者（MusicPlaybackService）随 Phase 6 落地 —— 服务组件本身届时才声明
+      （现在声明一个类还不存在的 <service> 只会在运行时炸）。
+      10 §3.1 补充项 `WRITE_EXTERNAL_STORAGE(maxSdkVersion=29)` 随物理删除落地（Phase 5）。
+    -->
 
     <application
         android:name=".AiMusicApp"

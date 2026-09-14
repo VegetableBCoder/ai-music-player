@@ -110,11 +110,21 @@ class SettingsRepository(
         ScanFilter(minDurationMs = it.scanMinDurationMs, minSizeBytes = it.scanMinSizeBytes)
     }
 
-    suspend fun setSortPreference(value: SongSort) =
-        dataStore.edit { it[KEY_SORT] = value.name }
+    // —— 写入 ——
+    //
+    // 这些 setter **必须显式返回 `Unit`**：写成表达式体（`= dataStore.edit { ... }`）时，
+    // 推断出的返回类型是 `androidx.datastore.preferences.core.Preferences`，而
+    // `datastore-preferences` 在本模块是 `implementation` —— 于是模块外的调用方会编译失败：
+    // 「Cannot access class 'Preferences'」。3e 的扫描页第一次从别的模块写设置时踩到。
+    // 消费者不需要那个返回值（`edit` 的返回值只在同一份 `edit` 链里有用）。
 
-    suspend fun setLastScanAt(epochMillis: Long) =
+    suspend fun setSortPreference(value: SongSort) {
+        dataStore.edit { it[KEY_SORT] = value.name }
+    }
+
+    suspend fun setLastScanAt(epochMillis: Long) {
         dataStore.edit { it[KEY_LAST_SCAN_AT] = epochMillis }
+    }
 
     suspend fun setLlmConfig(
         provider: String?,
@@ -122,20 +132,25 @@ class SettingsRepository(
         model: String?,
         supportsJsonSchema: Boolean,
         maxRetries: Int,
-    ) = dataStore.edit { prefs ->
-        provider?.let { prefs[KEY_LLM_PROVIDER] = it }
-        baseUrl?.let { prefs[KEY_LLM_BASE_URL] = it }
-        model?.let { prefs[KEY_LLM_MODEL] = it }
-        prefs[KEY_LLM_JSON_SCHEMA] = supportsJsonSchema
-        prefs[KEY_LLM_MAX_RETRIES] = maxRetries
+    ) {
+        dataStore.edit { prefs ->
+            provider?.let { prefs[KEY_LLM_PROVIDER] = it }
+            baseUrl?.let { prefs[KEY_LLM_BASE_URL] = it }
+            model?.let { prefs[KEY_LLM_MODEL] = it }
+            prefs[KEY_LLM_JSON_SCHEMA] = supportsJsonSchema
+            prefs[KEY_LLM_MAX_RETRIES] = maxRetries
+        }
     }
 
-    suspend fun setPermissionHintShown(shown: Boolean) =
+    suspend fun setPermissionHintShown(shown: Boolean) {
         dataStore.edit { it[KEY_PERMISSION_HINT] = shown }
+    }
 
-    suspend fun setScanFilter(minDurationMs: Long, minSizeBytes: Long) = dataStore.edit {
-        it[KEY_SCAN_MIN_DURATION] = minDurationMs
-        it[KEY_SCAN_MIN_SIZE] = minSizeBytes
+    suspend fun setScanFilter(minDurationMs: Long, minSizeBytes: Long) {
+        dataStore.edit {
+            it[KEY_SCAN_MIN_DURATION] = minDurationMs
+            it[KEY_SCAN_MIN_SIZE] = minSizeBytes
+        }
     }
 
     /** 仅供测试：用于验证「存储里是坏值时回落默认而不是崩」。 */

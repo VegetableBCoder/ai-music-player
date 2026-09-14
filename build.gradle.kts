@@ -9,6 +9,26 @@ plugins {
 }
 
 // ---------------------------------------------------------------------------
+// androidx 版本对齐
+//
+// androidx 的库每跳一个 minor 常会把 minCompileSdk 抬一级，而本项目 compileSdk = 36。
+// 只在版本目录里写版本号**不够**：传递依赖会带来更高的 minor，Gradle 默认取高版本，
+// 于是 `checkDebugAarMetadata` 会在构建末尾报「requires 37」。
+// 3e 首次真正依赖 navigation / lifecycle-compose 时踩到；这两个版本本机缓存里都有。
+// ---------------------------------------------------------------------------
+
+subprojects {
+    configurations.configureEach {
+        resolutionStrategy.eachDependency {
+            when (requested.group) {
+                "androidx.lifecycle" -> useVersion("2.10.0")
+                "androidx.navigation" -> useVersion("2.9.0")
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 模块依赖守卫
 //
 // 文档 02 §2 要求"严格单向依赖，禁止反向依赖与 feature 间依赖"。口头约定必然
