@@ -73,6 +73,8 @@ class FileStorageSource(
 
     override fun exists(path: String): Boolean = File(path).exists()
 
+    override fun isDirectory(path: String): Boolean = File(path).isDirectory
+
     override fun size(path: String): Long = File(path).length()
 
     override fun readBytes(path: String, maxBytes: Int): ByteArray {

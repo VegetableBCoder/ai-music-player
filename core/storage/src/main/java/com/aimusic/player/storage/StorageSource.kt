@@ -9,6 +9,15 @@ package com.aimusic.player.storage
 interface StorageSource {
     fun listFiles(roots: List<String>, exts: Set<String>, onProgress: (Int) -> Unit): Sequence<FileRef>
     fun exists(path: String): Boolean
+
+    /**
+     * 目录判定。
+     *
+     * 加这一条是为了 `04 §3.4` 的 `add`：它要区分「路径不存在」与「路径存在但不是目录」，
+     * 给用户两种不同的提示。没有它，业务层就只能自己摸 `java.io.File`，而 `04 §1.2`
+     * 明令禁止业务层直接碰文件系统。
+     */
+    fun isDirectory(path: String): Boolean
     fun size(path: String): Long
     fun readBytes(path: String, maxBytes: Int = 1 shl 20): ByteArray
 

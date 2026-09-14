@@ -197,6 +197,18 @@ class FileStorageSourceTest {
     }
 
     @Test
+    fun `isDirectory_区分「不存在」与「存在但不是目录」`() {
+        val file = touch("Music/a.mp3")
+        val src = source()
+
+        assertThat(src.isDirectory(File(temp.root, "Music").absolutePath)).isTrue()
+        assertThat(src.isDirectory(file.absolutePath)).isFalse()
+        // 关键区别：来源管理要靠它给出两种不同的提示（04 §3.4）
+        assertThat(src.exists(File(temp.root, "并没有这个").absolutePath)).isFalse()
+        assertThat(src.isDirectory(File(temp.root, "并没有这个").absolutePath)).isFalse()
+    }
+
+    @Test
     fun `readBytes_按上限截断_不整个读进内存`() {
         val file = touch("Music/big.mp3", "0123456789")
         val src = source()

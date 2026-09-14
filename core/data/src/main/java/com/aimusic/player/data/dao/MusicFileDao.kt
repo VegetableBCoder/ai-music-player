@@ -1,6 +1,8 @@
 package com.aimusic.player.data.dao
 
 import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.aimusic.player.data.entity.MusicFileEntity
 import com.aimusic.player.data.model.AnalysisStatus
@@ -28,6 +30,24 @@ abstract class MusicFileDao {
 
     @Query("SELECT * FROM music_file WHERE analysis_status IN ('UNANALYZED','FAILED')")
     abstract suspend fun pendingForAnalysis(): List<MusicFileEntity>
+
+    // —— 扫描差异比对与提交（04 §4.6 / §4.8） ——
+
+    /** 「库中已存在」集合：**一次取全量**，不逐文件查询（`04 §7` 的数据量假设：百~千级）。 */
+    @Query("SELECT path FROM music_file")
+    abstract suspend fun allPaths(): List<String>
+
+    @Query("SELECT * FROM music_file WHERE path = :path LIMIT 1")
+    abstract suspend fun findByPath(path: String): MusicFileEntity?
+
+    /**
+     * 幂等批量插入（`04 §4.8` 步骤 ②）。
+     *
+     * 返回每行的 rowId，其中 **`-1` 表示这一行被 `path` 唯一索引忽略了**。调用方**必须**
+     * 把 `-1` 过滤掉再写 `analysis_run_file` —— 否则批次清单会指向一条不存在的文件行。
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertIgnoreAll(files: List<MusicFileEntity>): List<Long>
 
     @Query(
         "UPDATE music_file SET entity_id = :entityId, analysis_status = 'LINKED', analyzed_at = :now " +
