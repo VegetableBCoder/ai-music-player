@@ -8,6 +8,7 @@ android {
 
     defaultConfig {
         minSdk = 26
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {
@@ -30,4 +31,10 @@ dependencies {
 
     // 3a 这批（路径规范化 / 白名单 / 目录遍历 / 权限决策）都是纯逻辑，全部走 JVM 单测
     testImplementation(project(":core:testing"))
+
+    // MMR 的真实读取只能在真机上验证（夹具由 tools/gen-audio-fixtures.py 生成）
+    androidTestImplementation(project(":core:testing"))
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
 }
