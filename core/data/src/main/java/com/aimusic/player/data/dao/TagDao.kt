@@ -50,8 +50,13 @@ abstract class TagDao {
     )
     abstract fun observeTagsOfSongs(entityIds: List<Long>, onlyMain: Boolean): Flow<List<EntityTagRow>>
 
-    @Query("SELECT name FROM tag WHERE name LIKE '%' || :q || '%' ORDER BY name")
-    abstract fun searchTags(q: String): Flow<List<String>>
+    /** 标签搜索（仅「分类 & 标签」页使用）；直接返回投影，省得仓储再查一轮补字段。 */
+    @Query(
+        """SELECT t.name AS name, t.category_id AS categoryId, t.is_builtin AS isBuiltin,
+                  (SELECT COUNT(*) FROM entity_tag et WHERE et.tag_id = t.name) AS songCount
+           FROM tag t WHERE t.name LIKE '%' || :q || '%' ORDER BY t.name""",
+    )
+    abstract fun searchTags(q: String): Flow<List<TagListItem>>
 
     @Query("SELECT COUNT(*) FROM entity_tag WHERE tag_id = :name")
     abstract suspend fun songCountOfTag(name: String): Int
