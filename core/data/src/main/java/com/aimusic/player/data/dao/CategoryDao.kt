@@ -42,8 +42,13 @@ abstract class CategoryDao {
     open suspend fun addCategory(name: String): Long =
         insertCategory(CategoryEntity(name = name))
 
+    @Query("SELECT EXISTS(SELECT 1 FROM category WHERE id = :id)")
+    abstract suspend fun categoryExists(id: Long): Boolean
+
     @Transaction
     open suspend fun deleteCategory(id: Long): DeleteCategoryResult {
+        if (!categoryExists(id)) return DeleteCategoryResult.NotFound
+
         val tagCount = tagCountOfCategory(id)
         if (tagCount > 0) return DeleteCategoryResult.Blocked(tagCount)
 

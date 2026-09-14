@@ -8,6 +8,7 @@ import com.aimusic.player.data.db.MusicDatabase
 import com.aimusic.player.data.error.AddTagResult
 import com.aimusic.player.data.error.DeleteCategoryResult
 import com.aimusic.player.data.error.DeleteTagResult
+import com.aimusic.player.data.error.TagRejectReason
 import com.aimusic.player.testing.runDbTest
 import com.google.common.truth.Truth.assertThat
 import org.junit.After
@@ -84,7 +85,7 @@ class TagCrudTest {
     fun `新增标签返回_Added`() = runDbTest {
         val category = categoryDao.addCategory("曲风")
 
-        assertThat(tagDao.addTag(category, "抒情", now = NOW)).isEqualTo(AddTagResult.Added(category))
+        assertThat(tagDao.addTag(category, "抒情", now = NOW)).isEqualTo(AddTagResult.Added("抒情"))
         assertThat(countOf("tag")).isEqualTo(1)
     }
 
@@ -96,8 +97,19 @@ class TagCrudTest {
 
         // 换个分类再建同名标签：标签全局唯一，应引导复用而不是新建
         assertThat(tagDao.addTag(mood, "抒情", now = NOW))
-            .isEqualTo(AddTagResult.ReuseExisting(existingCategoryId = rock))
+            .isEqualTo(AddTagResult.ReuseExisting("抒情", rock, "曲风"))
         assertThat(countOf("tag")).isEqualTo(1)
+    }
+
+    @Test
+    fun `空名与不存在的分类被拒绝而不是写库`() = runDbTest {
+        val category = categoryDao.addCategory("曲风")
+
+        assertThat(tagDao.addTag(category, "  ", now = NOW))
+            .isEqualTo(AddTagResult.Rejected(TagRejectReason.EMPTY_NAME))
+        assertThat(tagDao.addTag(999L, "抒情", now = NOW))
+            .isEqualTo(AddTagResult.Rejected(TagRejectReason.MISSING_CATEGORY))
+        assertThat(countOf("tag")).isEqualTo(0)
     }
 
     @Test
@@ -163,6 +175,12 @@ class TagCrudTest {
 
         assertThat(categoryDao.deleteCategory(category)).isEqualTo(DeleteCategoryResult.Deleted)
         assertThat(countOf("category")).isEqualTo(0)
+    }
+
+    @Test
+    fun `删除不存在的标签或分类返回_NotFound`() = runDbTest {
+        assertThat(tagDao.deleteTag("从未存在的标签")).isEqualTo(DeleteTagResult.NotFound)
+        assertThat(categoryDao.deleteCategory(999L)).isEqualTo(DeleteCategoryResult.NotFound)
     }
 
     @Test

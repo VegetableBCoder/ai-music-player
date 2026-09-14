@@ -18,5 +18,16 @@ data class NormalizeResult(
 /** (分类, 标签名)。分类不在当前有效集合中时由数据层丢弃（AI 不得新建分类）。 */
 data class TagAssignment(val category: String, val name: String)
 
-/** 当前有效标签的快照条目，用于组装 prompt。 */
-data class TagRef(val name: String, val category: String)
+/**
+ * 标签引用 —— **全项目唯一的标签展示类型**。
+ *
+ * `06 §3.1` 明确要求它与 `02 §5.3` 同构、「避免第二套命名」，因此 LLM 侧的
+ * `NormalizeRequest.tags` 与列表投影共用这一个类型。
+ *
+ * 比 `02 §5.3` 原稿多出 `categoryId`：列表与筛选需要按分类定位，只靠分类名不便关联。
+ */
+data class TagRef(
+    val name: String,
+    val categoryId: Long,
+    val categoryName: String,
+)

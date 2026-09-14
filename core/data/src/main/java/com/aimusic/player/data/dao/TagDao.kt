@@ -9,6 +9,7 @@ import com.aimusic.player.data.entity.EntityTagCrossRef
 import com.aimusic.player.data.entity.TagEntity
 import com.aimusic.player.data.error.AddTagResult
 import com.aimusic.player.data.error.DeleteTagResult
+import com.aimusic.player.data.error.TagRejectReason
 import com.aimusic.player.data.model.EntityTagRow
 import com.aimusic.player.data.model.TagListItem
 import kotlinx.coroutines.flow.Flow
@@ -19,22 +20,35 @@ abstract class TagDao {
     // —— 查询（03 §3.4） ——
 
     @Query(
-        """SELECT t.name AS name, t.is_builtin AS isBuiltin, COUNT(et.entity_id) AS songCount
+        """SELECT t.name AS name, t.category_id AS categoryId, t.is_builtin AS isBuiltin,
+                  COUNT(et.entity_id) AS songCount
            FROM tag t LEFT JOIN entity_tag et ON et.tag_id = t.name
            WHERE t.category_id = :categoryId
            GROUP BY t.name ORDER BY t.name""",
     )
     abstract fun observeTags(categoryId: Long): Flow<List<TagListItem>>
 
-    /** 批量取若干实体的标签；`onlyMain = true` 时只取主要分类下的。 */
+    /** 批量取若干实体的标签；`onlyMain = true` 时只取主要分类下的（I6）。 */
     @Query(
-        """SELECT et.entity_id AS entityId, t.name AS name, t.category_id AS categoryId
+        """SELECT et.entity_id AS entityId, t.name AS name, t.category_id AS categoryId,
+                  c.name AS categoryName
            FROM entity_tag et
            JOIN tag t ON t.name = et.tag_id
            JOIN category c ON c.id = t.category_id
            WHERE et.entity_id IN (:entityIds) AND (:onlyMain = 0 OR c.is_main = 1)""",
     )
     abstract suspend fun tagsOfSongs(entityIds: List<Long>, onlyMain: Boolean): List<EntityTagRow>
+
+    /** Flow 版批量取标签（`06 §3.3` 的 DAO 侧）；上面那个 suspend 版供写事务内使用。 */
+    @Query(
+        """SELECT et.entity_id AS entityId, t.name AS name, t.category_id AS categoryId,
+                  c.name AS categoryName
+           FROM entity_tag et
+           JOIN tag t ON t.name = et.tag_id
+           JOIN category c ON c.id = t.category_id
+           WHERE et.entity_id IN (:entityIds) AND (:onlyMain = 0 OR c.is_main = 1)""",
+    )
+    abstract fun observeTagsOfSongs(entityIds: List<Long>, onlyMain: Boolean): Flow<List<EntityTagRow>>
 
     @Query("SELECT name FROM tag WHERE name LIKE '%' || :q || '%' ORDER BY name")
     abstract fun searchTags(q: String): Flow<List<String>>
@@ -44,6 +58,12 @@ abstract class TagDao {
 
     @Query("SELECT category_id FROM tag WHERE name = :name")
     abstract suspend fun categoryIdOfTag(name: String): Long?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM tag WHERE name = :name)")
+    abstract suspend fun tagExists(name: String): Boolean
+
+    @Query("SELECT name FROM category WHERE id = :id")
+    abstract suspend fun categoryNameById(id: Long): String?
 
     @Query("SELECT name FROM tag WHERE name IN (:names)")
     abstract suspend fun existingNames(names: List<String>): List<String>
@@ -66,17 +86,26 @@ abstract class TagDao {
 
     @Transaction
     open suspend fun addTag(categoryId: Long, name: String, now: Long): AddTagResult {
+        if (name.isBlank()) return AddTagResult.Rejected(TagRejectReason.EMPTY_NAME)
+        if (categoryNameById(categoryId) == null) {
+            return AddTagResult.Rejected(TagRejectReason.MISSING_CATEGORY)
+        }
+
         // 11 §7：不额外查询判定冲突，直接用插入返回码区分（-1 = 被 IGNORE 掉）
         val rowId = insertTagIgnoring(TagEntity(name = name, categoryId = categoryId, createdAt = now))
-        if (rowId != -1L) return AddTagResult.Added(categoryId)
+        if (rowId != -1L) return AddTagResult.Added(name)
 
-        // 只在「已存在」这条分支上读回分类，避免 TOCTOU 之外的额外 IO
-        val existingCategoryId = categoryIdOfTag(name) ?: return AddTagResult.Added(categoryId)
-        return AddTagResult.ReuseExisting(existingCategoryId)
+        // 只在「已存在」这条分支上读回原分类，供 UI 引导复用
+        val existingCategoryId = categoryIdOfTag(name) ?: return AddTagResult.Added(name)
+        val existingCategoryName = categoryNameById(existingCategoryId)
+            ?: return AddTagResult.Added(name)
+        return AddTagResult.ReuseExisting(name, existingCategoryId, existingCategoryName)
     }
 
     @Transaction
     open suspend fun deleteTag(name: String): DeleteTagResult {
+        if (!tagExists(name)) return DeleteTagResult.NotFound
+
         val songCount = songCountOfTag(name)
         if (songCount > 0) return DeleteTagResult.Blocked(songCount)
 
