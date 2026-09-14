@@ -76,3 +76,9 @@ data class EntityPlayableRow(
     val entityId: Long,
     val playableCount: Int,
 )
+
+/** 批量取演唱者名的行：实体 id + 演唱者名（按 position 排序）。 */
+data class EntityArtistRow(
+    val entityId: Long,
+    val name: String,
+)

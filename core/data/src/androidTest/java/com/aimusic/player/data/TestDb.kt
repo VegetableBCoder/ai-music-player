@@ -59,9 +59,16 @@ internal fun MusicDatabase.insertCategory(name: String, isMain: Boolean = false)
 internal fun MusicDatabase.insertTag(name: String, categoryId: Long) =
     exec("INSERT INTO tag (name, category_id, is_builtin, created_at) VALUES ('$name', $categoryId, 0, 0)")
 
+/**
+ * 挂靠文件到实体。
+ *
+ * **刻意不动 `analysis_status`**：挂靠（entity_id 有值）与分析完成（status = LINKED）
+ * 是两件事。夹具里把它们混为一谈，会让「可播性由 LINKED 派生」这类断言失去判别力 ——
+ * 曾经因此把一首未分析的歌判成可播。需要 LINKED 时用 `insertFile(status = "LINKED")`。
+ */
 internal fun MusicDatabase.linkFile(fileId: Long, entityId: Long, isRepresentative: Boolean = false) =
     exec(
-        "UPDATE music_file SET entity_id = $entityId, analysis_status = 'LINKED', " +
+        "UPDATE music_file SET entity_id = $entityId, " +
             "is_representative = ${if (isRepresentative) 1 else "NULL"} WHERE id = $fileId"
     )
 

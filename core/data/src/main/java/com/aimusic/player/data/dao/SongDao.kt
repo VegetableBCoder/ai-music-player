@@ -12,6 +12,7 @@ import com.aimusic.player.data.entity.SongArtistEntity
 import com.aimusic.player.data.entity.SongEntity
 import com.aimusic.player.data.entity.TagEntity
 import com.aimusic.player.data.model.AnalysisStatus
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 abstract class SongDao {
@@ -21,6 +22,9 @@ abstract class SongDao {
 
     @Query("SELECT * FROM song_entity WHERE id = :id LIMIT 1")
     abstract suspend fun byId(id: Long): SongEntity?
+
+    @Query("SELECT * FROM song_entity WHERE id = :id LIMIT 1")
+    abstract fun observeById(id: Long): Flow<SongEntity?>
 
     @Insert
     abstract suspend fun insertSong(entity: SongEntity): Long

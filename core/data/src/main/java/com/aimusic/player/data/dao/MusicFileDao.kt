@@ -19,6 +19,13 @@ abstract class MusicFileDao {
     @Query("SELECT COUNT(*) FROM music_file WHERE entity_id IN (:ids) AND analysis_status = 'LINKED'")
     abstract suspend fun playableCount(ids: List<Long>): Int
 
+    /** 存在可用文件的实体 id 子集（`06 §3.3`：入队过滤的唯一判定入口）。 */
+    @Query(
+        "SELECT DISTINCT entity_id FROM music_file " +
+            "WHERE entity_id IN (:ids) AND analysis_status = 'LINKED'",
+    )
+    abstract suspend fun playableIds(ids: List<Long>): List<Long>
+
     @Query("SELECT * FROM music_file WHERE analysis_status IN ('UNANALYZED','FAILED')")
     abstract suspend fun pendingForAnalysis(): List<MusicFileEntity>
 

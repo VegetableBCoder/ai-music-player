@@ -5,6 +5,7 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import com.aimusic.player.data.dao.AnalysisRunDao
 import com.aimusic.player.data.dao.CategoryDao
+import com.aimusic.player.data.dao.LibraryDao
 import com.aimusic.player.data.dao.LlmCacheDao
 import com.aimusic.player.data.dao.LyricDao
 import com.aimusic.player.data.dao.MusicFileDao
@@ -64,6 +65,8 @@ abstract class MusicDatabase : RoomDatabase() {
     abstract fun categoryDao(): CategoryDao
 
     abstract fun musicFileDao(): MusicFileDao
+
+    abstract fun libraryDao(): LibraryDao
 
     abstract fun lyricDao(): LyricDao
 
