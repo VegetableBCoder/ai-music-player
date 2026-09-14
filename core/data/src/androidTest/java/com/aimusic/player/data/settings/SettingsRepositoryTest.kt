@@ -14,7 +14,7 @@ import java.io.File
 import java.util.UUID
 
 /**
- * `SettingsRepository`（`03 §6` 的 8 个 key）。
+ * `SettingsRepository`（`03 §6` 的 10 个 key）。
  *
  * 空存储时的默认值也要钉住：设置页依赖它们渲染，且「没设过」与「设成默认值」在 UI 上
  * 应当没有区别。
@@ -46,6 +46,11 @@ class SettingsRepositoryTest {
         assertThat(settings.llmSupportsJsonSchema).isFalse()
         assertThat(settings.llmMaxRetries).isEqualTo(SettingsRepository.DEFAULT_MAX_RETRIES)
         assertThat(settings.permissionHintShown).isFalse()
+        // 扫描过滤两条规则**默认开启**（需求 01 §2.5）：默认值不是 0，而是阈值本身
+        assertThat(settings.scanMinDurationMs)
+            .isEqualTo(SettingsRepository.DEFAULT_SCAN_MIN_DURATION_MS)
+        assertThat(settings.scanMinSizeBytes)
+            .isEqualTo(SettingsRepository.DEFAULT_SCAN_MIN_SIZE_BYTES)
     }
 
     @Test
@@ -60,6 +65,7 @@ class SettingsRepositoryTest {
             maxRetries = 5,
         )
         repo.setPermissionHintShown(true)
+        repo.setScanFilter(minDurationMs = 0L, minSizeBytes = 5_000L)
 
         val settings = repo.settings.first()
 
@@ -71,6 +77,32 @@ class SettingsRepositoryTest {
         assertThat(settings.llmSupportsJsonSchema).isTrue()
         assertThat(settings.llmMaxRetries).isEqualTo(5)
         assertThat(settings.permissionHintShown).isTrue()
+        assertThat(settings.scanMinDurationMs).isEqualTo(0L)
+        assertThat(settings.scanMinSizeBytes).isEqualTo(5_000L)
+    }
+
+    @Test
+    fun `扫描过滤_默认两条都开_边界为等于即通过_0_表示不启用`() = runDbTest {
+        val filter = repo.scanFilter.first()
+        assertThat(filter.minDurationMs).isEqualTo(60_000L)
+        assertThat(filter.minSizeBytes).isEqualTo(102_400L)
+
+        // 需求措辞是「不扫描**短于**60 秒」「不扫描**小于**100 KB」→ 等于阈值应当通过
+        assertThat(filter.acceptsDuration(59_999L)).isFalse()
+        assertThat(filter.acceptsDuration(60_000L)).isTrue()
+        assertThat(filter.acceptsSize(102_399L)).isFalse()
+        assertThat(filter.acceptsSize(102_400L)).isTrue()
+
+        // 关掉一条就把该条写成 0：这条不再设限，另一条照旧（两条相互独立）
+        repo.setScanFilter(minDurationMs = 0L, minSizeBytes = 102_400L)
+        val durationOff = repo.scanFilter.first()
+        assertThat(durationOff.acceptsDuration(1L)).isTrue()
+        assertThat(durationOff.acceptsSize(1L)).isFalse()
+
+        repo.setScanFilter(minDurationMs = 60_000L, minSizeBytes = 0L)
+        val sizeOff = repo.scanFilter.first()
+        assertThat(sizeOff.acceptsSize(1L)).isTrue()
+        assertThat(sizeOff.acceptsDuration(1L)).isFalse()
     }
 
     @Test
