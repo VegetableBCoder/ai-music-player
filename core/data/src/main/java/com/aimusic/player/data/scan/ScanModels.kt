@@ -80,5 +80,13 @@ sealed interface CommitResult {
 
     data class NothingToCommit(val reason: String) : CommitResult
 
+    /**
+     * 提交在批次边界被取消。
+     *
+     * 与 `NothingToCommit` **不能混用**：已提交的批次**保留**了（`04 §4.9`），说「没东西可提交」
+     * 是错的。文档 §3.2 原本没有这一支，是 §4.9 的取消语义要求它可被表达。
+     */
+    data object Cancelled : CommitResult
+
     data class Failed(val kind: FailureKind, val cause: Throwable?) : CommitResult
 }
