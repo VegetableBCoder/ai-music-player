@@ -44,18 +44,24 @@
 ```
 core/llm/src/main/kotlin/com/aimusic/player/llm/
   LlmNormalizer.kt            # 接口 + 契约数据类（NormalizeRequest/Result/Outcome/LlmFailureKind/TagRef/TagAssignment）
-  LlmConfig.kt                # 供应商 / model / baseUrl / 能力标记 / 超时 / maxRetries
-  PromptBuilder.kt            # system + user prompt 组装、JSON Schema 生成、promptVersion
-  NormalizeParser.kt          # 结构化输出解析、字段校验、标签过滤
+  LlmConfig.kt                # protocol（协议方言）/ model / baseUrl / 能力标记 / batchSize / maxTokens / 超时 / maxRetries
+  protocol/LlmCall.kt         # 协议无关中间表示：LlmCall / LlmHttpResult / ProtocolAdapter
+  adapter/*.kt                # 三套方言适配器：OpenAiAdapter / ResponsesAdapter / AnthropicAdapter
+  PromptBuilder.kt            # 读外置 prompt 资源、渲染占位符、prompt 文件哈希
+  NormalizeParser.kt          # 结构化输出解析、字段校验、tag_groups 摊平、标签过滤
   BackoffPolicy.kt            # 退避参数与算法
-  DirectProvider.kt           # OkHttp + Retrofit + kotlinx.serialization，直连 /chat/completions
+  DirectProvider.kt           # 方言适配器 + OkHttp，协议无关（不再直连固定路径）
   RetryingLlmNormalizer.kt    # 429 退避装饰器
   CachingLlmNormalizer.kt     # 缓存装饰器
   LlmCache.kt                 # 缓存读写抽象（实现在 :core:data）
-  api/LlmApi.kt               # Retrofit 接口
-  api/dto/*.kt               # ChatCompletionRequest/Response、JsonSchema、Message
+  adapter/openai/LlmApi.kt    # OPENAI 适配器私有 Retrofit 接口
+  adapter/openai/dto/*.kt     # OPENAI 私有 DTO：ChatCompletionRequest/Response、JsonSchema、Message
+core/llm/src/main/resources/prompt/
+  system.txt                  # 硬性规则（§4.4.1 + 批量两条）
+  user.txt                    # 目录 + 文件清单（§4.4.2 的批量版）
+  schema.json                 # 响应骨架（唯一动态处：tag_groups[].category.enum）
 core/data/src/main/kotlin/com/aimusic/player/data/
-  AnalysisOrchestrator.kt     # 编排：单 worker 串行、进度、重试、计数
+  AnalysisOrchestrator.kt     # 编排：单 worker 串行、按批取文件、进度、重试、计数
   AnalysisProgress.kt         # 进度模型（Flow 事件）
   cache/LlmCacheEntity.kt     # llm_cache 表实体
   cache/LlmCacheDao.kt        # llm_cache DAO
@@ -67,12 +73,12 @@ core/common/src/main/kotlin/com/aimusic/player/common/
 
 | 类 | 关键签名 | 职责 |
 | --- | --- | --- |
-| `LlmNormalizer` | `suspend fun normalize(request: NormalizeRequest): NormalizeOutcome` | 统一接口，装饰链最内层契约 |
-| `DirectProvider` | 实现 `LlmNormalizer` | HTTP 直连、错误码映射 |
+| `LlmNormalizer` | `suspend fun normalize(requests: List<NormalizeRequest>): List<NormalizeOutcome>` | 统一接口，装饰链最内层契约（一次一批、返回按索引对齐） |
+| `DirectProvider` | 实现 `LlmNormalizer` | 经 `ProtocolAdapter` 编解码、错误码映射（协议无关） |
 | `RetryingLlmNormalizer` | `(delegate, policy, sleeper, onBackoff)` | 429 指数退避（装饰器） |
-| `CachingLlmNormalizer` | `(delegate, cache)` | 结果缓存（装饰器，最外层） |
-| `PromptBuilder` | `fun build(req: NormalizeRequest): PromptBundle` | 组装 messages + json_schema |
-| `NormalizeParser` | `fun parse(text: String, req: NormalizeRequest): NormalizeOutcome` | 解析校验 |
+| `CachingLlmNormalizer` | `(delegate, cache, keyProvider)` | 结果缓存（装饰器，最外层，逐文件） |
+| `PromptBuilder` | `fun build(reqs: List<NormalizeRequest>): PromptBundle` | 读外置资源、渲染占位符 + schema |
+| `NormalizeParser` | `fun parse(text: String, req: List<NormalizeRequest>): List<NormalizeOutcome>` | 解析校验、`file_index` 对齐、`tag_groups` 摊平 |
 | `AnalysisOrchestrator` | `analyzePending(runId): Flow<AnalysisProgress>` / `retry(fileIds)` | 编排、状态机驱动、计数 |
 
 > 命名标注：`AnalysisProgress` 与 `llm_cache` 表为本文档新引入的补充（`AnalysisProgress` 在 `02 §5.6` 只出现类型引用、未定义；`llm_cache` 在 `03` 中尚未登记），**不更名、不冲突**，仅补充定义，需同步回 `02` / `03`（详见 §3.5、§4.8 的标注）。
@@ -81,11 +87,12 @@ core/common/src/main/kotlin/com/aimusic/player/common/
 
 # 3. 数据结构与接口
 
-## 3.1 `:core:llm` 公开契约（严格复用 `02 §5.3`，逐字一致）
+## 3.1 `:core:llm` 公开契约（复用 `02 §5.3`；仅 `normalize` 入参改为列表、返回按索引对齐）
 
 ```kotlin
 interface LlmNormalizer {
-    suspend fun normalize(request: NormalizeRequest): NormalizeOutcome
+    /** 一次一批（默认 20 个文件）；返回与入参等长、按索引对齐。 */
+    suspend fun normalize(requests: List<NormalizeRequest>): List<NormalizeOutcome>
 }
 
 data class NormalizeRequest(
@@ -110,6 +117,9 @@ sealed interface NormalizeOutcome {
 enum class LlmFailureKind { NETWORK, AUTH, SERVER, INVALID_OUTPUT, TIMEOUT }
 ```
 
+> **批量语义**：调用失败（网络 / 超时 / 429 / 5xx / AUTH）使列表内每一项取同一结果（整批同命运、不按文件重发）；解析失败只把对应索引置 `Failure(INVALID_OUTPUT)`，其余照常（见 §4.5、§6）。
+> **与 `02 §5.3` 的差异**：`NormalizeRequest` / `NormalizeResult` / `NormalizeOutcome` / `LlmFailureKind` 逐字复用；**唯一改动是 `normalize` 入参由单个 `NormalizeRequest` 改为列表、返回按索引对齐**，需同步修订 `02 §5.3`。
+
 `02 §5.3` 中 `TagRef` / `TagAssignment` 以注释形式给出，此处固化为数据类：
 
 ```kotlin
@@ -121,12 +131,14 @@ data class TagAssignment(val category: String, val name: String)
 
 ```kotlin
 data class LlmConfig(
-    val provider: String,                 // openai | deepseek | zhipu | qwen | kimi ...
-    val baseUrl: String,                  // OpenAI 兼容端点，以 "/" 结尾
+    val protocol: String,                 // 协议方言：openai | responses | anthropic（服务商只作 UI 预设，不落库）
+    val baseUrl: String,                  // 端点前缀，以 "/" 结尾
     val model: String,                    // e.g. "gpt-4o-mini" / "deepseek-chat"
     val apiKey: String,                   // 来自 EncryptedSharedPreferences（不落盘明文、不进日志）
     val supportsJsonSchema: Boolean,      // DataStore: llm_supports_json_schema
     val maxRetries: Int,                  // DataStore: llm_max_retries，即 429 重试上限 N
+    val batchSize: Int = 20,              // 一次请求的文件数（DataStore: llm_batch_size）
+    val maxTokens: Int = 8_192,           // DataStore: llm_max_tokens
     val connectTimeoutMs: Long = 15_000,
     val readTimeoutMs: Long = 90_000,     // LLM 生成较慢，读超时放宽
     val callTimeoutMs: Long = 120_000,
@@ -141,7 +153,48 @@ data class BackoffPolicy(
 )
 ```
 
-## 3.3 HTTP 层 DTO（kotlinx.serialization）
+## 3.3 协议抽象与三套方言适配器
+
+`:core:llm` 对上层只暴露**协议无关**的调用模型；编解码全部收敛在方言适配器里，重试 / 缓存 / 解析 / JSON 强制对三方言完全无知。
+
+```kotlin
+enum class ProtocolKind { OPENAI, RESPONSES, ANTHROPIC }
+
+/** 协议无关的中间表示；适配器负责把它封成各方言的信封。 */
+data class LlmCall(
+    val system: String,
+    val user: String,
+    val schema: JsonElement,      // 骨架 + 运行时填入的分类 enum
+    val model: String,
+    val maxTokens: Int,
+    val temperature: Double = 0.0
+)
+
+sealed interface LlmHttpResult {
+    data class Ok(val payloadJson: String) : LlmHttpResult   // 统一还原成 JSON 字符串
+    data class HttpError(val status: Int, val retryAfterMs: Long?, val body: String) : LlmHttpResult
+    data class Transport(val cause: Throwable) : LlmHttpResult
+}
+
+interface ProtocolAdapter {
+    fun encode(call: LlmCall, cfg: LlmConfig): HttpRequestSpec   // url / headers / body
+    fun decode(status: Int, headers: Map<String, String>, body: String): LlmHttpResult
+}
+```
+
+方言差异全部落在适配器里（`normalize` 之上的重试 / 缓存 / 解析层对下表一无所知）：
+
+| | `OPENAI` | `RESPONSES` | `ANTHROPIC` |
+| --- | --- | --- | --- |
+| 路径 | `POST {base}/chat/completions` | `POST {base}/responses` | `POST {base}/messages` |
+| 鉴权 | `Authorization: Bearer <k>` | 同左 | `x-api-key: <k>` + `anthropic-version: 2023-06-01` |
+| system 位置 | `messages[0].role=system` | 顶层 `instructions` | 顶层 `system`（**不是** message） |
+| 结构化输出 | `response_format.json_schema` | `text.format{type:json_schema,name,strict,schema}` | `tools[].input_schema` + `tool_choice` 强制 `tool_use` |
+| 取结果 | `choices[0].message.content`（字符串） | `output[]` 中 `type=message` 的 `content[].text` | `content[]` 中 `type=tool_use` 的 `input`（已解析对象，适配器负责 `Json.encodeToString` 还原成 JSON 字符串） |
+| 长度参数 | `max_tokens` | `max_output_tokens` | `max_tokens` |
+| 限流 | `429` + `Retry-After` | 同左 | 同左；另有 `529` overloaded → 归 `SERVER`（不重试） |
+
+`ChatMessage` / `ChatCompletionRequest` / `LlmApi` 等只是 **`OPENAI` 适配器的私有 DTO**（见 §3.4），不再作为总纲对外：
 
 ```kotlin
 @Serializable data class ChatMessage(val role: String, val content: String)
@@ -159,7 +212,7 @@ data class BackoffPolicy(
     val messages: List<ChatMessage>,
     val temperature: Double = 0.0,
     @SerialName("response_format") val responseFormat: ResponseFormat? = null,
-    @SerialName("max_tokens") val maxTokens: Int? = 1_024
+    @SerialName("max_tokens") val maxTokens: Int? = null   // 由 LlmCall.maxTokens 填入
 )
 
 @Serializable data class ChatCompletionResponse(
@@ -168,10 +221,10 @@ data class BackoffPolicy(
 ) { @Serializable data class Choice(val message: ChatMessage?, val finish_reason: String? = null) }
 ```
 
-## 3.4 Retrofit 接口
+## 3.4 `OPENAI` 适配器的 Retrofit 接口（私有）
 
 ```kotlin
-interface LlmApi {
+interface LlmApi {                       // 仅 OPENAI 适配器使用
     @POST("chat/completions")
     suspend fun chatCompletions(
         @Header("Authorization") authorization: String,   // "Bearer sk-****"
@@ -182,6 +235,7 @@ interface LlmApi {
 ```
 
 > 用 `Response<T>` 而非直接返回体，是为了**读取 HTTP 状态码与 `Retry-After` 响应头**（429 退避依赖它）。
+> `RESPONSES` / `ANTHROPIC` 方言使用各自的路径、鉴权头与信封（见 §3.3 表），不共用本接口。
 
 ## 3.5 新增表 `llm_cache`
 
@@ -250,54 +304,66 @@ AnalysisRunDao.linkFiles(runId, fileIds)                     // analysis_run_fil
    ▼
 AnalysisOrchestrator.analyzePending(runId) : Flow<AnalysisProgress>   // 单 worker 串行
    │
-   for each file in pendingForAnalysis():
-   │     MusicFileDao.setStatus(fileId, ANALYZING, null, null)        // 保持 ANALYZING
-   │     categories = CategoryDao.currentNames()                       // 实时读取
-   │     tags       = TagDao.currentTagRefs()                          // 实时读取
-   │     req = NormalizeRequest(fileName, metadata, categories, tags)
-   │     outcome = normalizer.normalize(req)     // Caching( Retrying( Direct ) )
+   for batch in pendingForAnalysis().chunked(config.batchSize):       // 一次一批，默认 20
+   │     categories = CategoryDao.currentNames()                       // 每批实时读取一次
+   │     tags       = TagDao.currentTagRefs()                          // 每批实时读取一次
+   │     reqs = batch.map { NormalizeRequest(it.fileName, it.metadata, categories, tags) }
+   │     batch.forEach { MusicFileDao.setStatus(it.id, ANALYZING, null, null) }  // 保持 ANALYZING
+   │     outcomes = normalizer.normalize(reqs)   // Caching( Retrying( Direct ) )，返回按索引对齐
+   │     outcomes.forEachIndexed { i, outcome ->                       // 逐文件落状态 / 计数 / 上报
    │       ├─ Success  → attachAnalysisResult(...) @Transaction → LINKED；analyzed_ok++
    │       ├─ RateLimited（重试耗尽） → FAILED(error_kind=RATE_LIMIT)；failed_count++
    │       └─ Failure  → FAILED(error_kind=…, analysis_error=…)；failed_count++
-   │     emit AnalysisProgress.FileUpdated / Running
+   │       emit AnalysisProgress.FileUpdated / Running
+   │     }
    │
    ▼
 AnalysisRunDao.finish(runId, status=COMPLETED | ABORTED, finished_at)
 ```
 
+> **为什么一次一批**：批内文件共享同一份「分类 + 标签目录」（user prompt 目录在前、文件清单在后，见 §4.4.2），目录只发一次 —— 这是批量真正省 token 的地方；进度仍逐文件上报（`AnalysisProgress.FileUpdated`），批只是传输粒度。
+
 ## 4.2 装饰链：顺序与理由
 
 ```
-调用方 ──► CachingLlmNormalizer ──► RetryingLlmNormalizer ──► DirectProvider ──► HTTPS
-              （最外层）                 （429 退避）            （真实网络）
+调用方 ──► CachingLlmNormalizer ──► RetryingLlmNormalizer ──► DirectProvider ──► 方言适配器 ──► HTTPS
+              （最外层，逐文件）          （429 退避）            （真实网络）
 ```
 
 ```kotlin
 val normalizer: LlmNormalizer =
     CachingLlmNormalizer(
         delegate = RetryingLlmNormalizer(
-            delegate = DirectProvider(api, config, parser, promptBuilder),
+            delegate = DirectProvider(
+                adapter = adapterFor(config.protocol),       // openai / responses / anthropic
+                http = HttpTransport(DirectProvider.createHttpClient(config)),
+                config = config, promptBuilder = promptBuilder, parser = parser
+            ),
             policy = BackoffPolicy(maxRetries = config.maxRetries),
             onBackoff = { ev -> progressSink.tryEmit(ev) }
         ),
-        cache = roomLlmCache
+        cache = roomLlmCache,
+        keyProvider = CacheKeyProvider
     )
 ```
 
 **装饰顺序 = `Caching(Retrying(Direct))`，理由：**
 
-1. **缓存最外层**：命中缓存时**完全不发起网络请求**（也不进入退避循环），是"重扫 / 重试不消耗 token"（`01 §3.3`）的关键。若缓存在内层，则每次都要先过退避层再做网络调用。
+1. **缓存最外层**：命中缓存时**完全不发起网络请求**（也不进入退避循环），是"重扫 / 重试不消耗 token"（`01 §3.3`）的关键。若缓存在内层，则每次都要先过退避层再做网络调用。（批量下逐文件查缓存：全命中即零网络，部分命中时只把未命中的塞进本次请求，见 §4.8。）
 2. **退避紧贴网络**：429 是传输层现象，退避只应包裹真实 HTTP 调用；缓存层不应感知 429。
 3. **只缓存成功结果**：`CachingLlmNormalizer` 仅在 `NormalizeOutcome.Success` 时写缓存；`RateLimited` / `Failure` **不写缓存**（否则会把瞬时故障固化）。而退避在缓存之内，成功结果天然是"退避之后"的最终成功。
 4. **可组合、可单测**：每个装饰器只做一件事，可独立注入假实现（`Sleeper`、`LlmCache`、假的 `DirectProvider`）。
 
 ## 4.3 `DirectProvider`
 
-### 4.3.1 OkHttp / Retrofit 装配
+### 4.3.1 适配器装配与调用
+
+`DirectProvider` 只认 `ProtocolAdapter` 与协议无关的 `LlmCall` / `LlmHttpResult`；具体路径 / 鉴权头 / system 位置 / 结构化输出字段全在适配器里（§3.3 表）。
 
 ```kotlin
 class DirectProvider(
-    private val api: LlmApi,
+    private val adapter: ProtocolAdapter,
+    private val http: HttpTransport,                   // 发送 HttpRequestSpec，返回 LlmHttpResult
     private val config: LlmConfig,
     private val promptBuilder: PromptBuilder,
     private val parser: NormalizeParser
@@ -313,65 +379,65 @@ class DirectProvider(
             .addInterceptor(HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.BASIC
                 redactHeader("Authorization")   // Key 不进日志（01 §3.1）
+                redactHeader("x-api-key")       // anthropic 方言
             })
             .build()
     }
 
-    override suspend fun normalize(request: NormalizeRequest): NormalizeOutcome {
-        val bundle = promptBuilder.build(request)          // system+user+json_schema
-        val body = ChatCompletionRequest(
-            model = config.model,
-            messages = bundle.messages,
-            temperature = 0.0,
-            responseFormat = if (config.supportsJsonSchema)
-                ResponseFormat("json_schema", JsonSchemaSpec("song_normalization", true, bundle.schema))
-            else ResponseFormat("json_object", null),       // 能力降级（01 §8）
-            maxTokens = 1_024
+    override suspend fun normalize(requests: List<NormalizeRequest>): List<NormalizeOutcome> {
+        val bundle = promptBuilder.build(requests)         // system+user+schema（读外置资源）
+        val call = LlmCall(
+            system = bundle.system, user = bundle.user, schema = bundle.schema,
+            model = config.model, maxTokens = config.maxTokens, temperature = 0.0
         )
-        return try {
-            val resp = api.chatCompletions("Bearer ${config.apiKey}", "application/json", body)
-            when {
-                resp.isSuccessful -> {
-                    val content = resp.body()?.choices?.firstOrNull()?.message?.content
-                        ?: return NormalizeOutcome.Failure(LlmFailureKind.INVALID_OUTPUT, null)
-                    parser.parse(content, request)                 // 见 §4.6
-                }
-                else -> mapHttpError(resp.code(), resp.headers()["Retry-After"])
-            }
-        } catch (e: SocketTimeoutException) {
-            NormalizeOutcome.Failure(LlmFailureKind.TIMEOUT, e)
-        } catch (e: IOException) {                              // 连接失败 / DNS / 断网
-            NormalizeOutcome.Failure(LlmFailureKind.NETWORK, e)
-        } catch (e: SerializationException) {
-            NormalizeOutcome.Failure(LlmFailureKind.INVALID_OUTPUT, e)
+        val spec = adapter.encode(call, config)            // 各方言：url / headers / body
+        val result = try {
+            http.send(spec)                                // 统一还原成 LlmHttpResult
         } catch (e: CancellationException) {
-            throw e                                             // 协程取消必须透传
+            throw e                                        // 协程取消必须透传
         } catch (e: Throwable) {
-            NormalizeOutcome.Failure(LlmFailureKind.SERVER, e)
+            LlmHttpResult.Transport(e)
+        }
+        return when (result) {
+            is LlmHttpResult.Ok        -> parser.parse(result.payloadJson, requests)   // 见 §4.5
+            is LlmHttpResult.HttpError -> batchFailure(mapHttpError(result.status, result.retryAfterMs), requests.size)
+            is LlmHttpResult.Transport -> batchFailure(transportKind(result.cause), requests.size)
         }
     }
 }
 ```
 
 ```kotlin
-private fun mapHttpError(code: Int, retryAfterHeader: String?): NormalizeOutcome {
-    val retryAfterMs = parseRetryAfterMs(retryAfterHeader)      // 见 §4.7，支持秒数/HTTP-date
-    return when {
-        code == 429 -> NormalizeOutcome.RateLimited(retryAfterMs)
-        code == 401 || code == 403 -> NormalizeOutcome.Failure(LlmFailureKind.AUTH, HttpError(code))
-        code in 500..599 -> NormalizeOutcome.Failure(LlmFailureKind.SERVER, HttpError(code))
-        else -> NormalizeOutcome.Failure(LlmFailureKind.INVALID_OUTPUT, HttpError(code)) // 400 schema 不支持等
-    }
+/** 整批同命运：调用失败时列表内每一项同值（不按文件重发，见 §6）。 */
+private fun batchFailure(kind: LlmFailureKind, size: Int): List<NormalizeOutcome> =
+    List(size) { NormalizeOutcome.Failure(kind, null) }
+
+private fun transportKind(cause: Throwable): LlmFailureKind = when (cause) {
+    is SocketTimeoutException -> LlmFailureKind.TIMEOUT      // 连接 / 读超时
+    is IOException -> LlmFailureKind.NETWORK                 // 连接失败 / DNS / 断网
+    else -> LlmFailureKind.SERVER
+}
+
+private fun mapHttpError(code: Int, retryAfterMs: Long?): NormalizeOutcome = when {   // 见 §4.7
+    code == 429 -> NormalizeOutcome.RateLimited(retryAfterMs)
+    code == 401 || code == 403 -> NormalizeOutcome.Failure(LlmFailureKind.AUTH, HttpError(code))
+    code == 529 -> NormalizeOutcome.Failure(LlmFailureKind.SERVER, HttpError(code))   // overloaded，不重试
+    code in 500..599 -> NormalizeOutcome.Failure(LlmFailureKind.SERVER, HttpError(code))
+    else -> NormalizeOutcome.Failure(LlmFailureKind.INVALID_OUTPUT, HttpError(code)) // 400 schema 不支持等
 }
 ```
 
-### 4.3.2 请求体示例（`response_format: json_schema`）
+### 4.3.2 请求体示例（三份方言）
+
+同一份 `LlmCall`（system / user / schema 见 §4.4）由适配器封装成各方言；下列以 `response_format: json_schema` 档为例。
+
+`OPENAI`（`POST {base}/chat/completions`）
 
 ```json
 {
   "model": "gpt-4o-mini",
   "temperature": 0.0,
-  "max_tokens": 1024,
+  "max_tokens": 8192,
   "response_format": {
     "type": "json_schema",
     "json_schema": {
@@ -380,19 +446,28 @@ private fun mapHttpError(code: Int, retryAfterHeader: String?): NormalizeOutcome
       "schema": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["canonical_title", "artists", "tags"],
+        "required": ["results"],
         "properties": {
-          "canonical_title": { "type": "string" },
-          "artists": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-          "tags": {
-            "type": "array",
+          "results": {
+            "type": "array", "minItems": 1,
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["category", "name"],
+              "type": "object", "additionalProperties": false,
+              "required": ["file_index", "canonical_title", "artists", "tag_groups"],
               "properties": {
-                "category": { "type": "string", "enum": ["音乐类型", "情绪", "场景", "主题"] },
-                "name": { "type": "string" }
+                "file_index":      { "type": "integer", "minimum": 1 },
+                "canonical_title": { "type": "string" },
+                "artists":         { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                "tag_groups": {
+                  "type": "array",
+                  "items": {
+                    "type": "object", "additionalProperties": false,
+                    "required": ["category", "tags"],
+                    "properties": {
+                      "category": { "type": "string", "enum": ["音乐类型", "情绪", "场景", "主题"] },
+                      "tags":     { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                    }
+                  }
+                }
               }
             }
           }
@@ -401,16 +476,45 @@ private fun mapHttpError(code: Int, retryAfterHeader: String?): NormalizeOutcome
     }
   },
   "messages": [
-    { "role": "system", "content": "……（见 §4.4）……" },
-    { "role": "user",   "content": "……（见 §4.4）……" }
+    { "role": "system", "content": "……（system.txt，见 §4.4.1）……" },
+    { "role": "user",   "content": "……（user.txt，见 §4.4.2）……" }
   ]
 }
 ```
 
-> `tags[].category.enum` 由 `PromptBuilder` **用当前有效分类动态填充**（`04 §3.3`：实时读取、非快照）。
-> **能力降级**：模型不支持 json_schema 时，`response_format = {"type":"json_object"}`（部分供应商支持）或省略，改为纯提示词约束 + `NormalizeParser` 容错（剥离 ```json 围栏、截取首个 `{` 到末个 `}`）。
+`RESPONSES`（`POST {base}/responses`）
+
+```json
+{
+  "model": "gpt-4o-mini",
+  "instructions": "……（system.txt）……",
+  "input": "……（user.txt）……",
+  "text": { "format": { "type": "json_schema", "name": "song_normalization", "strict": true,
+                        "schema": { /* 同 OPENAI 骨架（§4.4.3），enum 注入当前有效分类 */ } } },
+  "max_output_tokens": 8192
+}
+```
+
+`ANTHROPIC`（`POST {base}/messages`，头含 `x-api-key` / `anthropic-version`）
+
+```json
+{
+  "model": "claude-3-5-sonnet",
+  "system": "……（system.txt）……",
+  "messages": [ { "role": "user", "content": "……（user.txt）……" } ],
+  "tools": [ { "name": "song_normalization",
+               "input_schema": { /* 同 OPENAI 骨架（§4.4.3），enum 注入当前有效分类 */ } } ],
+  "tool_choice": { "type": "tool", "name": "song_normalization" },
+  "max_tokens": 8192
+}
+```
+
+> `tag_groups[].category.enum` 由 `PromptBuilder` **用当前有效分类动态填充**（`04 §3.3`：实时读取、非快照）。
+> **能力降级**：模型不支持 json_schema 时，`OPENAI` 用 `response_format = {"type":"json_object"}`（部分供应商支持）或省略，改为纯提示词约束 + `NormalizeParser` 容错（剥离 ```json 围栏、截取首个 `{` 到末个 `}`）。
 
 ## 4.4 `PromptBuilder`
+
+prompt 与 schema **外置为资源文件**（`core/llm/src/main/resources/prompt/`），改文案不用碰代码；占位符 `{{categories}}` / `{{tags}}` / `{{maxPerCategory}}` / `{{files}}` 用最朴素的字符串替换（不引模板引擎），schema 定死骨架、只有分类 enum 运行时注入。
 
 ### 4.4.1 system prompt（中文，完整示例）
 
@@ -427,28 +531,41 @@ private fun mapHttpError(code: Int, retryAfterHeader: String?): NormalizeOutcome
    - 将 feat. / with / & / / 、等分隔符统一拆分，每个演唱者作为一个独立元素。
    - 把歌手别名归一到规范名（例如「周董」「Jay Chou」→「周杰伦」）。
    - 去重；不要排序。纯音乐请填演奏者（如 坂本龙一），不要留空。
-4. tags（标签数组，元素为 {"category": 分类名, "name": 标签名}）：
+4. tag_groups（标签分组数组，元素为 {"category": 分类名, "tags": [标签名, …]}）：
    - 只能使用【当前有效分类】里列出的分类名；严禁创造新分类。
    - 优先复用【当前有效标签】里已存在的标签；只有当现有标签都不合适时，才可以在某分类下新增标签。
    - 严格遵守「各分类标签数量上限」；宁缺毋滥，不要堆砌近义标签。
    - 如果没有把握或缺少相关知识，可以返回空数组 []，这不算错误。
 5. 标签与分类名一律使用简体中文，与输入给出一致。
+6. 一次会给你【多个文件】。必须返回一个对象 {"results": [...]}，results 的长度必须等于输入文件数；
+   每项用 file_index（与输入的【文件 N】一致）标明属于哪个文件。不得遗漏、不得新增、不得改变顺序。
+7. 某个文件信息不足时仍然要输出该项：artists 至少给一个你能确定的署名（拿不准就用文件名里的歌手，
+   再不行用「未知艺术家」），tag_groups 可以是 []。不要跳过任何 file_index。
 ```
 
-### 4.4.2 user prompt（中文，完整示例）
+### 4.4.2 user prompt（中文，完整示例 → 外置为 `user.txt` 模板）
+
+模板 `user.txt`（**目录在前、文件清单在后**，`{{…}}` 由 `PromptBuilder` 替换）：
 
 ```
-【文件名】
-周杰伦 - 晴天(Live).flac
+【当前有效分类】（只能使用以下分类，不得新增）
+{{categories}}
 
-【内嵌元数据】
-title: 晴天
-artist: 周杰伦
-album: 叶惠美
-albumArtist: 周杰伦
-date: 2003-07-31
-durationMs: 269000
+【当前有效标签】（优先复用；必要时可在对应分类下新增）
+{{tags}}
 
+【各分类标签数量上限】
+{{maxPerCategory}}
+
+【文件清单】
+{{files}}
+
+请只输出 JSON。
+```
+
+渲染后（2 个文件的批次示意；20 个文件共享同一份目录，目录只发一次）：
+
+```
 【当前有效分类】（只能使用以下分类，不得新增）
 - 音乐类型
 - 情绪
@@ -464,115 +581,150 @@ durationMs: 269000
 【各分类标签数量上限】
 音乐类型 ≤ 2, 情绪 ≤ 2, 场景 ≤ 1, 主题 ≤ 2
 
+【文件清单】
+【文件 1】
+文件名: 周杰伦 - 晴天(Live).flac
+内嵌元数据:
+  title: 晴天
+  artist: 周杰伦
+  album: 叶惠美
+  albumArtist: 周杰伦
+  date: 2003-07-31
+  durationMs: 269000
+
+【文件 2】
+文件名: 未知艺术家 - Track 03.mp3
+内嵌元数据: （无）
+
 请只输出 JSON。
 ```
 
 ```kotlin
-class PromptBuilder {
-    companion object {
-        // 修改 prompt / schema 时递增，参与缓存 key（§4.8）
-        const val PROMPT_VERSION = "v1"
-    }
+class PromptBuilder(private val resources: PromptResources) {   // 读 core/llm/src/main/resources/prompt/
 
-    fun build(req: NormalizeRequest): PromptBundle {
-        val sys = SYSTEM_TEMPLATE                                  // 上面的 system prompt
-        val user = buildUser(req)                                  // 上面的 user prompt
-        val schema = buildSchema(req.categories)                   // enum 动态注入当前有效分类
-        return PromptBundle(
-            messages = listOf(ChatMessage("system", sys), ChatMessage("user", user)),
-            schema = schema
+    /** system.txt + user.txt + schema.json 文件内容的 sha256，参与缓存 key（§4.8） */
+    fun promptHash(): String = resources.promptHash()
+
+    fun build(reqs: List<NormalizeRequest>): PromptBundle {
+        val categories = reqs.first().categories                     // 每批实时读取一次（非快照）
+        val tags = reqs.first().tags
+        val user = resources.user()                                  // 目录在前、文件清单在后
+            .substitute("{{categories}}", renderCategories(categories))
+            .substitute("{{tags}}", renderTags(tags))
+            .substitute("{{maxPerCategory}}", renderLimits(categories))
+            .substitute("{{files}}", renderFiles(reqs))               // 逐文件【文件 N】+ 文件名 + 内嵌元数据
+        val schema = Json.parseToJsonElement(
+            resources.schemaJson().substitute("{{categories}}", categories.joinToString("\",\""))
         )
+        return PromptBundle(system = resources.system(), user = user, schema = schema)
     }
-
-    private fun buildUser(req: NormalizeRequest): String = buildString {
-        appendLine("【文件名】\n${req.fileName}")
-        req.metadata?.let { m ->
-            appendLine("【内嵌元数据】")
-            appendLine("title: ${m.title.orEmpty()}")
-            appendLine("artist: ${m.artist.orEmpty()}")
-            appendLine("album: ${m.album.orEmpty()}")
-            appendLine("albumArtist: ${m.albumArtist.orEmpty()}")
-            appendLine("date: ${m.date.orEmpty()}")
-            appendLine("durationMs: ${m.durationMs}")
-        }
-        appendLine("【当前有效分类】（只能使用以下分类，不得新增）")
-        req.categories.forEach { appendLine("- $it") }
-        appendLine("【当前有效标签】（优先复用；必要时可在对应分类下新增）")
-        req.tags.groupBy { it.category }.forEach { (cat, list) ->
-            appendLine("- $cat: ${list.joinToString(", ") { it.name }}")
-        }
-        appendLine("【各分类标签数量上限】" + req.categories.joinToString(", ") { "$it ≤ $maxPerCategory" })
-        appendLine("请只输出 JSON。")
-    }
+    // renderCategories / renderTags / renderLimits / renderFiles：纯字符串拼接，见上例
 }
 ```
 
-### 4.4.3 输出 JSON Schema（客户端 `schema` 字段，此处以可读形式给出）
+### 4.4.3 输出 JSON Schema（外置为 `schema.json`）
 
-```kotlin
-fun buildSchema(categories: List<String>): JsonElement = buildJsonObject {
-    put("type", "object"); put("additionalProperties", false)
-    putJsonArray("required") { add("canonical_title"); add("artists"); add("tags") }
-    putJsonObject("properties") {
-        putJsonObject("canonical_title") { put("type", "string") }
-        putJsonObject("artists") {
-            put("type", "array"); put("minItems", 1)
-            putJsonObject("items") { put("type", "string") }
-        }
-        putJsonObject("tags") {
-            put("type", "array")
-            putJsonObject("items") {
-                put("type", "object"); put("additionalProperties", false)
-                putJsonArray("required") { add("category"); add("name") }
-                putJsonObject("properties") {
-                    putJsonObject("category") {
-                        put("type", "string")
-                        putJsonArray("enum") { categories.forEach { add(it) } }   // ← 当前有效分类
-                    }
-                    putJsonObject("name") { put("type", "string") }
-                }
+`schema.json` 定死响应骨架（唯一动态处：`tag_groups[].category.enum`，由 `{{categories}}` 注入当前有效分类）：
+
+```json
+{
+  "type": "object", "additionalProperties": false, "required": ["results"],
+  "properties": {
+    "results": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["file_index", "canonical_title", "artists", "tag_groups"],
+        "properties": {
+          "file_index":      { "type": "integer", "minimum": 1 },
+          "canonical_title": { "type": "string" },
+          "artists":         { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "tag_groups": {
+            "type": "array",
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["category", "tags"],
+              "properties": {
+                "category": { "type": "string", "enum": ["{{categories}}"] },
+                "tags":     { "type": "array", "minItems": 1, "items": { "type": "string" } }
+              }
             }
+          }
         }
+      }
     }
+  }
 }
 ```
+
+> **防漂移测试**：`schema.json` 的 `required` 字段集合 == `NormalizeParser` 认识的字段集合，对不上即红（§8）。
+> 不让它由 Kotlin 类型自动生成 —— 自动生成会在改字段时**悄悄改掉发给模型的契约**，而 parser 的判定规则还在代码里，两边必然漂移。
 
 ## 4.5 输出解析与校验（`NormalizeParser`）
 
-```kotlin
-fun parse(text: String, req: NormalizeRequest): NormalizeOutcome {
-    val obj = runCatching { Json.parseToJsonElement(stripFences(text)).jsonObject }.getOrNull()
-        ?: return NormalizeOutcome.Failure(LlmFailureKind.INVALID_OUTPUT, null)
+解析整批响应、按 `file_index` 对回入参，并把 `tag_groups` 摊平成 `TagAssignment`。入口签名锁定为 `parse(text, req)`（`text` 为适配器还原后的 JSON 字符串；批处理下 `req` 为整批请求，返回与入参等长、按索引对齐）：
 
-    // 1. canonicalTitle：字段缺失 / 空 → 失败
-    val rawTitle = obj["canonical_title"]?.jsonPrimitive?.contentOrNull
-    val title = rawTitle?.let(TextNormalizer::title)
+```kotlin
+fun parse(text: String, req: List<NormalizeRequest>): List<NormalizeOutcome> {
+    val obj = runCatching { Json.parseToJsonElement(stripFences(text)).jsonObject }.getOrNull()
+        ?: return allFailure(req.size, LlmFailureKind.INVALID_OUTPUT)     // 整批不可解析（不兜底，见二期）
+
+    // 0. results 必须是数组（缺 / 非数组 → 整批失败）
+    val items = obj["results"]?.jsonArray
+        ?: return allFailure(req.size, LlmFailureKind.INVALID_OUTPUT)
+    if (items.size != req.size)
+        logger.warn("results 长度 ${items.size} != 输入 ${req.size}")     // 长度不等不整批连坐
+
+    // 1. 按 file_index 对回（1 起，与 prompt 中【文件 N】一致）；不用文件名做键
+    val byIndex = HashMap<Int, JsonObject>()
+    for (el in items) {
+        val idx = el.jsonObject["file_index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+        if (idx == null || idx < 1 || idx > req.size || byIndex.put(idx, el.jsonObject) != null) {
+            logger.warn("drop result: file_index=${el.jsonObject["file_index"]} 非法 / 越界 / 重复")
+            continue                                        // 该文件判失败，其余照常
+        }
+    }
+    return req.mapIndexed { i, r ->
+        val o = byIndex[i + 1] ?: return@mapIndexed NormalizeOutcome.Failure(LlmFailureKind.INVALID_OUTPUT, null)
+        parseOne(o, r)
+    }
+}
+
+/** 整批失败：列表内每一项同值（整批不可解析 / 缺 results 等）。 */
+private fun allFailure(size: Int, kind: LlmFailureKind): List<NormalizeOutcome> =
+    List(size) { NormalizeOutcome.Failure(kind, null) }
+
+/** 单个条目：标题 / 歌手 / tag_groups；条目级失败只连坐本文件。 */
+private fun parseOne(obj: JsonObject, req: NormalizeRequest): NormalizeOutcome {
+    // canonicalTitle：字段缺失 / 空 → 失败
+    val title = obj["canonical_title"]?.jsonPrimitive?.contentOrNull?.let(TextNormalizer::title)
     if (title.isNullOrBlank())
         return NormalizeOutcome.Failure(LlmFailureKind.INVALID_OUTPUT, MissingField("canonical_title"))
 
-    // 2. artists：字段缺失 / 空数组 → 失败（实体身份第二维不可为空，00 §1.2）
+    // artists：字段缺失 / 空数组 → 失败（实体身份第二维不可为空，00 §1.2）
     val rawArtists = obj["artists"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
     if (rawArtists.isNullOrEmpty())
         return NormalizeOutcome.Failure(LlmFailureKind.INVALID_OUTPUT, MissingField("artists"))
-
     val artists = rawArtists
         .flatMap(TextNormalizer::splitArtists)      // 兜底拆分 feat./&//、等
         .map(TextNormalizer::artist)
         .filter { it.isNotBlank() }
         .distinct()                                 // 去重；不排序（排序在 entityKey 计算时做）
 
-    // 3. tags：逐条校验
+    // tag_groups：逐组判分类 → 组内逐条判名字；摊平成 TagAssignment
     val validCats = req.categories.toSet()
     val assignments = mutableListOf<TagAssignment>()
-    for (el in obj["tags"]?.jsonArray.orEmpty()) {
-        val name = el.jsonObject["name"]?.jsonPrimitive?.contentOrNull?.trim()
-        val cat  = el.jsonObject["category"]?.jsonPrimitive?.contentOrNull?.trim()
-        if (name.isNullOrEmpty()) continue
+    for (group in obj["tag_groups"]?.jsonArray.orEmpty()) {
+        val cat = group.jsonObject["category"]?.jsonPrimitive?.contentOrNull?.trim()
         if (cat == null || cat !in validCats) {
-            logger.warn("drop tag '$name': category '$cat' not in current categories")  // 丢弃 + 记日志
+            logger.warn("drop tag group: category '$cat' not in current categories")  // 整组丢弃
             continue
         }
-        assignments += TagAssignment(cat, name)
+        for (t in group.jsonObject["tags"]?.jsonArray.orEmpty()) {
+            val name = t.jsonPrimitive.contentOrNull?.trim()
+            if (name.isNullOrEmpty()) { logger.warn("drop tag: empty name"); continue }  // 丢该条
+            assignments += TagAssignment(cat, name)
+        }
     }
     // 每分类数量上限兜底（prompt 已约束，此处防御）
     val capped = assignments.groupBy { it.category }
@@ -586,14 +738,17 @@ fun parse(text: String, req: NormalizeRequest): NormalizeOutcome {
 
 | 情形 | 处理 |
 | --- | --- |
-| 根不是 JSON 对象 / 解析异常 | `Failure(INVALID_OUTPUT)` |
-| `canonical_title` 缺失或 trim 后为空 | `Failure(INVALID_OUTPUT)` |
-| `artists` 缺失 / 空数组 / 全为空串 | `Failure(INVALID_OUTPUT)`（纯音乐也必须有演奏者，`00 §1.2`） |
-| 某标签 `name` 为空 | 丢弃该条，`logger.warn` |
-| 某标签 `category` 不在**当前有效分类** | 丢弃该条，`logger.warn`（AI 不得新建分类，`04 §2.1`；对齐 `03 §4.1` step 7） |
-| 标签 `name` 已存在于**另一分类** | 交给 `attachAnalysisResult`：`tag` 名称全局唯一（I5），以库中实际分类为准，忽略模型给的 `category` |
-| 标签数量超上限 | 每分类 `take(maxTagsPerCategory)` |
-| `tags` 缺失 / 空数组 | **合法**：`NormalizeResult.tagAssignments = []`，不算失败（`04 §3.3`、`05 §2`） |
+| **整批**根不是 JSON 对象 / 解析异常 | 整批 `Failure(INVALID_OUTPUT)`（不做逐个重发兜底，见二期） |
+| **整批**缺 `results` / `results` 非数组 | 整批 `Failure(INVALID_OUTPUT)` |
+| `results` 长度 ≠ 输入文件数 | `logger.warn`；缺项的索引判失败，其余照常（**不**整批连坐） |
+| 某条缺 `file_index` / index 越界（不在 `1..N`）/ index 重复 | 该文件 `Failure(INVALID_OUTPUT)`，**同批其余照常** |
+| 某条 `canonical_title` 缺失或 trim 后为空 | 该文件 `Failure(INVALID_OUTPUT)`，其余照常 |
+| 某条 `artists` 缺失 / 空数组 / 全为空串 | 该文件 `Failure(INVALID_OUTPUT)`（纯音乐也必须有演奏者，`00 §1.2`），其余照常 |
+| 某**组** `category` 不在**当前有效分类** | 丢弃该**组**，`logger.warn`（AI 不得新建分类，`04 §2.1`；对齐 `03 §4.1` step 7） |
+| 某**条**标签 `tags[].name` 为空 | 丢弃该条，`logger.warn` |
+| 某标签名已存在于**另一分类** | 交给 `attachAnalysisResult`：`tag` 名称全局唯一（I5），以库中实际分类为准，忽略模型给的 `category` |
+| 某分类标签数超上限 | 组内 `take(maxTagsPerCategory)` |
+| `tag_groups` 缺失 / 空数组 | **合法**：`NormalizeResult.tagAssignments = []`，不算失败（`04 §3.3`、`05 §2`） |
 
 **归一化规则（`TextNormalizer`）**
 
@@ -650,20 +805,19 @@ class RetryingLlmNormalizer(
     private val onBackoff: (BackoffEvent) -> Unit = {}
 ) : LlmNormalizer {
 
-    override suspend fun normalize(request: NormalizeRequest): NormalizeOutcome {
+    override suspend fun normalize(requests: List<NormalizeRequest>): List<NormalizeOutcome> {
         var attempt = 0
         while (true) {
-            when (val out = delegate.normalize(request)) {
-                is NormalizeOutcome.RateLimited -> {
-                    if (attempt >= policy.maxRetries) return out      // 重试耗尽 → 上抛，交由编排器置 FAILED
-                    val delayMs = backoffDelayMs(attempt, out.retryAfterMs, policy)
-                    onBackoff(BackoffEvent(currentCoroutineContext(), attempt + 1, delayMs))
-                    sleeper.sleep(delayMs)                            // ★ 退避期间 orchestrator 仍在 await，
-                                                                      //   analysis_status 保持 ANALYZING，不计失败
-                    attempt++
-                }
-                else -> return out      // Success / Failure 原样返回（非 429 不自动处理）
-            }
+            val outs = delegate.normalize(requests)
+            // 429 是批级现象：整批同命运，任一项 RateLimited 即整批退避重试
+            val limited = outs.firstOrNull { it is NormalizeOutcome.RateLimited } as? NormalizeOutcome.RateLimited
+                ?: return outs                                   // 无 429 → 原样返回（Success / Failure 不自动处理）
+            if (attempt >= policy.maxRetries) return outs        // 重试耗尽 → 上抛，交由编排器置 FAILED
+            val delayMs = backoffDelayMs(attempt, limited.retryAfterMs, policy)
+            onBackoff(BackoffEvent(currentCoroutineContext(), attempt + 1, delayMs))
+            sleeper.sleep(delayMs)                               // ★ 退避期间 orchestrator 仍在 await，
+                                                                 //   analysis_status 保持 ANALYZING，不计失败
+            attempt++
         }
     }
 }
@@ -689,7 +843,7 @@ fun parseRetryAfterMs(header: String?): Long? = when {
 - **重试上限 N**：`policy.maxRetries = LlmConfig.maxRetries`（DataStore `llm_max_retries`，`03 §6`）。
 - **`Retry-After` 优先**：非空时覆盖指数基数，但仍受 `maxDelayMs=60s` 上限约束。
 - **退避期间保持 ANALYZING、不计失败**：`sleeper.sleep` 在 `normalize()` 的 `await` 内完成；`AnalysisOrchestrator` 在调用前已置 `ANALYZING`，调用返回前既不改状态、也不递增 `failed_count`。同时 `onBackoff` 让编排器 emit `AnalysisProgress.Retrying`，前端展示"重试中"（`05 §2`）。
-- **其他错误不自动处理**：只有 `RateLimited` 进入重试；`Failure(NETWORK/AUTH/SERVER/INVALID_OUTPUT/TIMEOUT)` 直接返回（`01 §3.3`、`02 §6.1`）。
+- **其他错误不自动处理**：只有 `RateLimited` 进入重试；`Failure(NETWORK/AUTH/SERVER/INVALID_OUTPUT/TIMEOUT)` 直接返回（`01 §3.3`、`02 §6.1`）。其中 **`529` overloaded 归 `SERVER`，不重试**（与需求 `00 §4.3`「5xx 不自动重试」一致）；只有 `429` 进退避。
 
 ## 4.8 缓存（`CachingLlmNormalizer`）
 
@@ -702,48 +856,62 @@ interface LlmCache {
 class CachingLlmNormalizer(
     private val delegate: LlmNormalizer,
     private val cache: LlmCache,
-    private val keyProvider: CacheKeyProvider
+    private val keyProvider: CacheKeyProvider,
+    private val model: String,
+    private val promptHash: () -> String,         // prompt 文件内容 sha256（§4.4.2）
+    private val dirFingerprint: () -> String      // 目录指纹：分类名 + 标签名的规范化串
 ) : LlmNormalizer {
-    override suspend fun normalize(request: NormalizeRequest): NormalizeOutcome {
-        val key = keyProvider.keyFor(request)                    // 见下方
-        cache.get(key)?.let { return NormalizeOutcome.Success(it) }   // ★ 命中：不发网络请求
-        val outcome = delegate.normalize(request)
-        if (outcome is NormalizeOutcome.Success) cache.put(key, outcome.result)  // 仅缓存成功
-        return outcome
+    override suspend fun normalize(requests: List<NormalizeRequest>): List<NormalizeOutcome> {
+        // 批量下逐文件查缓存；全命中即零网络，未命中的才进本次请求（§6）
+        val keys = requests.map { keyProvider.keyFor(it, model, promptHash(), dirFingerprint()) }
+        val cached = keys.map { cache.get(it) }
+        val missIdx = requests.indices.filter { cached[it] == null }
+        if (missIdx.isEmpty()) return cached.map { NormalizeOutcome.Success(it!!) }   // ★ 零网络
+
+        val fresh = delegate.normalize(missIdx.map { requests[it] })                  // 只发未命中
+        val out = cached.toMutableList()
+        missIdx.forEachIndexed { j, i ->
+            val o = fresh[j]
+            if (o is NormalizeOutcome.Success) cache.put(keys[i], o.result)           // 仅缓存成功
+            out[i] = o
+        }
+        return out
     }
 }
 
 object CacheKeyProvider {
-    fun keyFor(request: NormalizeRequest, model: String, promptVersion: String): String {
+    fun keyFor(request: NormalizeRequest, model: String, promptHash: String, dirFingerprint: String): String {
         val fingerprint = buildString {
             request.metadata?.let { m -> append(m.title).append('|').append(m.artist)
                 .append('|').append(m.album).append('|').append(m.durationMs) }
         }
-        val raw = listOf(request.fileName, fingerprint, model, promptVersion).joinToString("\u001F")
+        val raw = listOf(request.fileName, fingerprint, model, promptHash, dirFingerprint)
+            .joinToString("\u001F")
         return sha256Hex(raw)
     }
 }
 ```
 
-**缓存 key 必须包含 `fileName + 元数据指纹 + model + prompt 版本`，理由：**
+**缓存 key = sha256(`fileName` ␟ 元数据指纹 ␟ `model` ␟ prompt 文件哈希 ␟ 目录指纹)，理由：**
 
 | 组成 | 为什么必须 |
 | --- | --- |
 | `fileName` | 文件名本身常含歌名/歌手信息，是分析的主要输入 |
 | 元数据指纹（title/artist/album/duration） | 同文件名不同元数据（内嵌标签被改）应重新分析 |
 | `model` | 换模型后结果口径不同（归一化与标签都可能变化），旧结果不可复用 |
-| `prompt 版本`（`PromptBuilder.PROMPT_VERSION`） | **标签体系/prompt 变更后旧结果不可用**：分类增删、标签复用清单、输出 schema 调整都会改变语义 |
+| prompt 文件哈希（`system.txt` + `user.txt` + `schema.json` 内容的 sha256） | **取代**手工 `PROMPT_VERSION`：prompt 外置后手工版本号必被遗忘（改了 prompt 却一直吃旧缓存）；用文件哈希则改文件即失效 |
+| 目录指纹（分类名 + 标签名的规范化串 sha256） | 用户**新建分类**后，同一文件若只按旧 key 命中缓存会永远缺这个新分类的标签；把它纳入 key 才能让新分类生效 |
 
-> 说明：`02 §5.3` 给出缓存 key 的初版为 `sha1(fileName + metadata)`；本文档细化为**必须包含 `model` 与 `prompt 版本`**（否则换模型 / 改标签体系后会命中过期结果）。此细化**扩展而非冲突**，需同步登记到 `02 §5.3`。
+> 说明：`02 §5.3` 给出缓存 key 的初版为 `sha1(fileName + metadata)`；本文档细化为**必须包含 `model`、prompt 文件哈希与目录指纹**（否则换模型 / 改标签体系 / 新建分类后会命中过期结果）。此细化**扩展而非冲突**，需同步登记到 `02 §5.3`。
 
 **命中缓存的流程**
 
 ```
-normalize(req)
-  → key = sha256(fileName ␟ metadataFingerprint ␟ model ␟ promptVersion)
-  → cache.get(key)
-       命中 → 直接返回 Success(result)   （零网络、零 token）
-       未命中 → 进入 Retrying(Direct) → 成功则 cache.put(key, result)
+normalize(reqs)                                    // 一次一批
+  逐文件 key = sha256(fileName ␟ 元数据指纹 ␟ model ␟ promptHash ␟ dirFingerprint)
+  → 逐文件 cache.get(key)
+       全命中 → 直接返回（零网络、零 token）
+       部分命中 → 只把未命中的塞进本次请求；成功则逐文件 cache.put(key, result)
 ```
 
 - 缓存表仅存 `result_json`（`NormalizeResult` 的序列化），与实体无外键，删除实体不清缓存（§3.5）。
@@ -760,6 +928,7 @@ class AnalysisOrchestrator(
     private val metadataReader: MetadataReader,
     private val musicDao: MusicDatabaseWriteDao,   // 承载 attachAnalysisResult
     private val normalizer: LlmNormalizer,
+    private val batchSize: Int = 20,
     private val progressThrottleMs: Long = 250
 ) {
     /** 单 worker 串行分析一批文件（runId 由建批次方给出） */
@@ -769,45 +938,53 @@ class AnalysisOrchestrator(
         var done = 0; var ok = 0; var failed = 0
         var lastEmit = 0L
         var aborted = false
-        for (file in files) {
+        for (batch in files.chunked(batchSize)) {                // 一次一批，默认 20
             if (!currentCoroutineContext().isActive) { aborted = true; break }   // 取消 → 收尾
-            if (file.analysisStatus == AnalysisStatus.LINKED) continue           // I4 兜底
-            fileDao.setStatus(file.id, AnalysisStatus.ANALYZING, null, null)     // 保持 ANALYZING
-            emit(AnalysisProgress.FileUpdated(file.id, file.fileName, AnalysisStatus.ANALYZING))
+            val pending = batch.filter { it.analysisStatus != AnalysisStatus.LINKED }   // I4 兜底
+            if (pending.isEmpty()) continue
 
-            val categories = categoryDao.currentNames()                          // 实时读取
-            val tags = tagDao.currentTagRefs()                                   // 实时读取
-            val meta = metadataReader.read(FileRef(file.path, file.fileName, file.size, 0))
-            val request = NormalizeRequest(file.fileName, meta, categories, tags)
-
-            when (val outcome = normalizer.normalize(request)) {
-                is NormalizeOutcome.Success -> {
-                    musicDao.commitAnalysisSuccess(file.id, outcome.result, runId, now())  // @Transaction
-                    ok++
-                    emit(AnalysisProgress.FileUpdated(file.id, file.fileName,
-                        AnalysisStatus.LINKED, linkedEntityId = musicDao.lastLinkedEntity(file.id)))
-                }
-                is NormalizeOutcome.RateLimited -> {                                 // 退避耗尽
-                    fileDao.setStatus(file.id, AnalysisStatus.FAILED,
-                        error = "RATE_LIMIT", kind = FailureKind.RATE_LIMIT.name)
-                    runDao.bumpFailed(runId); failed++
-                    emit(AnalysisProgress.FileUpdated(file.id, file.fileName,
-                        AnalysisStatus.FAILED, error = FailureKind.RATE_LIMIT.name))
-                }
-                is NormalizeOutcome.Failure -> {
-                    val fk = outcome.kind.toFailureKind()                            // §6 映射表
-                    fileDao.setStatus(file.id, AnalysisStatus.FAILED,
-                        error = fk.name, kind = fk.name)
-                    runDao.bumpFailed(runId); failed++
-                    emit(AnalysisProgress.FileUpdated(file.id, file.fileName,
-                        AnalysisStatus.FAILED, error = fk.name))
-                }
+            val categories = categoryDao.currentNames()                          // 每批实时读取一次
+            val tags = tagDao.currentTagRefs()                                   // 每批实时读取一次
+            val reqs = pending.map { file ->
+                val meta = metadataReader.read(FileRef(file.path, file.fileName, file.size, 0))
+                NormalizeRequest(file.fileName, meta, categories, tags)
             }
-            done++
-            val t = now()
-            if (t - lastEmit >= progressThrottleMs || done == files.size) {          // 进度节流
-                lastEmit = t
-                emit(AnalysisProgress.Running(done, files.size, ok, failed))
+            pending.forEach {
+                fileDao.setStatus(it.id, AnalysisStatus.ANALYZING, null, null)   // 保持 ANALYZING
+                emit(AnalysisProgress.FileUpdated(it.id, it.fileName, AnalysisStatus.ANALYZING))
+            }
+
+            val outcomes = normalizer.normalize(reqs)            // 返回与 reqs 等长、按索引对齐
+            pending.forEachIndexed { i, file ->
+                when (val outcome = outcomes[i]) {
+                    is NormalizeOutcome.Success -> {
+                        musicDao.commitAnalysisSuccess(file.id, outcome.result, runId, now())  // @Transaction
+                        ok++
+                        emit(AnalysisProgress.FileUpdated(file.id, file.fileName,
+                            AnalysisStatus.LINKED, linkedEntityId = musicDao.lastLinkedEntity(file.id)))
+                    }
+                    is NormalizeOutcome.RateLimited -> {                          // 退避耗尽
+                        fileDao.setStatus(file.id, AnalysisStatus.FAILED,
+                            error = "RATE_LIMIT", kind = FailureKind.RATE_LIMIT.name)
+                        runDao.bumpFailed(runId); failed++
+                        emit(AnalysisProgress.FileUpdated(file.id, file.fileName,
+                            AnalysisStatus.FAILED, error = FailureKind.RATE_LIMIT.name))
+                    }
+                    is NormalizeOutcome.Failure -> {
+                        val fk = outcome.kind.toFailureKind()                     // §6 映射表
+                        fileDao.setStatus(file.id, AnalysisStatus.FAILED,
+                            error = fk.name, kind = fk.name)
+                        runDao.bumpFailed(runId); failed++
+                        emit(AnalysisProgress.FileUpdated(file.id, file.fileName,
+                            AnalysisStatus.FAILED, error = fk.name))
+                    }
+                }
+                done++
+                val t = now()
+                if (t - lastEmit >= progressThrottleMs || done == files.size) {   // 进度节流
+                    lastEmit = t
+                    emit(AnalysisProgress.Running(done, files.size, ok, failed))
+                }
             }
         }
         runDao.finish(runId, if (aborted) RunStatus.ABORTED else RunStatus.COMPLETED, now())
@@ -924,18 +1101,18 @@ fun observeRunFiles(runId: Long): Flow<List<RunFileRow>>
 
 # 6. 错误处理
 
-`LlmFailureKind` → `02 §8` `FailureKind` 映射（写入 `music_file.error_kind`）：
+`LlmFailureKind` → `02 §8` `FailureKind` 映射（写入 `music_file.error_kind`）。失败分两类，作用范围不同：**调用失败**（网络 / 超时 / 429 / 5xx / `AUTH`）是传输层现象、与具体文件无关，**整批同命运、不按文件重发**；**解析失败**（`INVALID_OUTPUT`）是**条目级**，只连坐对应的那个文件（整批不可解析除外）。
 
 | 触发 | `LlmFailureKind` | `NormalizeOutcome` | 状态 | `error_kind`（FailureKind） | 自动恢复 | 用户可见动作 |
 | --- | --- | --- | --- | --- | --- | --- |
 | HTTP 429 | — | `RateLimited(retryAfterMs)` | 保持 `ANALYZING` | — | **是**（指数退避） | "重试中"，不计失败 |
-| 429 重试耗尽 | — | `RateLimited` | `FAILED` | `RATE_LIMIT` | 否 | 「重试」 |
-| HTTP 401/403 | `AUTH` | `Failure` | `FAILED` | `AUTH` | 否 | 「去设置」 |
-| HTTP 5xx | `SERVER` | `Failure` | `FAILED` | `SERVER` | 否 | 「重试」 |
-| 网络不可达 | `NETWORK` | `Failure` | `FAILED` | `NETWORK` | 否 | 「重试」 |
-| 连接/读超时 | `TIMEOUT` | `Failure` | `FAILED` | `NETWORK` | 否 | 「重试」 |
-| 结构化输出解析失败 | `INVALID_OUTPUT` | `Failure` | `FAILED` | `PARSE` | 否 | 「重试」 |
-| 400（schema 不支持） | `INVALID_OUTPUT` | `Failure` | `FAILED` | `PARSE` | 否 | 「重试」（可提示切换模型） |
+| 429 重试耗尽 | — | `RateLimited` | 整批 `FAILED` | `RATE_LIMIT` | 否 | 「重试」 |
+| HTTP 401/403 | `AUTH` | `Failure` | 整批 `FAILED` | `AUTH` | 否 | 「去设置」 |
+| HTTP 5xx / 529 | `SERVER` | `Failure` | 整批 `FAILED` | `SERVER` | 否 | 「重试」 |
+| 网络不可达 | `NETWORK` | `Failure` | 整批 `FAILED` | `NETWORK` | 否 | 「重试」 |
+| 连接/读超时 | `TIMEOUT` | `Failure` | 整批 `FAILED` | `NETWORK` | 否 | 「重试」 |
+| 结构化输出解析失败 | `INVALID_OUTPUT` | `Failure` | 该文件 `FAILED`（其余照常） | `PARSE` | 否 | 「重试」 |
+| 400（schema 不支持） | `INVALID_OUTPUT` | `Failure` | 整批 `FAILED` | `PARSE` | 否 | 「重试」（可提示切换模型） |
 
 ```kotlin
 fun LlmFailureKind.toFailureKind(): FailureKind = when (this) {
@@ -985,11 +1162,11 @@ fun LlmFailureKind.toFailureKind(): FailureKind = when (this) {
 | 5xx 不自动重试 | MockWebServer 返回 500，断言**只发一次请求**，`Failed(SERVER)` | 需求 `00 §4.3` |
 | 401/403 → AUTH | 断言 `LlmFailureKind.AUTH`、`error_kind=AUTH` | §6 |
 | 网络异常 | 关闭 MockWebServer / 注入 `IOException` → `NETWORK`；`SocketTimeoutException` → `TIMEOUT` | §6 |
-| 畸形 JSON | 返回 `not json` / 缺 `canonical_title` / 空 `artists` → `INVALID_OUTPUT` | §4.5 |
-| 标签过滤 | 返回分类不在当前有效集合的标签 → **丢弃**且不写库；日志有 warn | §4.5、需求 `04 §2.1` |
-| 0 标签 | 返回 `tags: []` → `Success`、`LINKED`、`analyzed_ok++`、不计失败 | §5.2、需求 `05 §2` |
+| 畸形 JSON | 返回 `not json` → **整批** `INVALID_OUTPUT`；缺 `canonical_title` / 空 `artists` → **只该文件** `INVALID_OUTPUT` | §4.5 |
+| 标签过滤 | 返回分类不在当前有效集合的**组** → **整组丢弃**且不写库；日志有 warn | §4.5、需求 `04 §2.1` |
+| 0 标签 | 返回 `tag_groups: []` → `Success`、`LINKED`、`analyzed_ok++`、不计失败 | §5.2、需求 `05 §2` |
 | 缓存命中不发网络 | 第一次真实返回并写缓存；第二次同 key，断言 MockWebServer `requestCount == 1` | §4.8 |
-| 缓存 key 组成 | 改 `model` 或 `PROMPT_VERSION` → 断言 key 变化、缓存未命中 | §4.8 |
+| 缓存 key 组成 | 改 `model` / prompt 文件（如 `system.txt`）/ 目录（新增一个分类）→ 断言 key 变化、缓存未命中 | §4.8 |
 | `entityKey` 确定性 | `[林俊杰, 蔡卓妍]` 与 `[蔡卓妍, 林俊杰]` → 相同 `artistsKey`；`U+001F` 连接；排序 Unicode 序 | §4.6、`03 §4.1` |
 | 版本语义词保留 | `晴天 (Live)` → `晴天 Live`，与 `晴天` 不同实体 | §4.6、`00 §1.2` |
 | 幂等 I4 | 对 `LINKED` 文件再次 `retry` → 无网络调用、实体不重建、标签不重复 | **I4**、§5.4 |
@@ -997,6 +1174,17 @@ fun LlmFailureKind.toFailureKind(): FailureKind = when (this) {
 | 中途取消 | 处理到第 k 个时 cancel → 前 k-1 `LINKED`、第 k 个回 `UNANALYZED`、`run.status=ABORTED` | §5.3 |
 | 最近分析记录 | `latest()` + `observeRunFiles()` 返回摘要与文件状态 | §4.10 |
 | 进度节流 | 大量文件时 `Running` 事件数 ≤ 时间窗上限 | §7.2 |
+| 三适配器编码 | 断言各协议的 url / 鉴权头 / system 位置 / 结构化输出字段 | §3.3 |
+| 三适配器解码 | 三份真实响应样本 → 都还原成同一段 JSON 字符串（含 anthropic 的 `input` 对象） | §3.3 |
+| `529 → SERVER` 不重试 | MockWebServer 返回 529，断言只发一次请求 | §3.3、§4.7 |
+| 批量编码 | 20 个文件 → 一次请求、`results` 结构、目录只出现一次 | §4.1、§4.4.2 |
+| `file_index` 回填 | 乱序返回 → 按 index 对回正确文件 | §4.5 |
+| 条目级失败隔离 | 一项标题空 → 只该文件 `FAILED`，其余 `LINKED` | §4.5、§6 |
+| 整批不可解析 | 返回 `not json` → 整批 `INVALID_OUTPUT` | §4.5、§6 |
+| 分组结构解析 | 一组多标签 → 摊平成多条 `TagAssignment`；无效分类整组丢弃 | §4.5 |
+| 部分命中 | 20 个文件里 5 个命中 → 只发 15 个 | §4.8 |
+| schema 防漂移 | `schema.json` 的 `required` == parser 认识字段 | §4.4.3 |
+| prompt 资源可读 | JVM 单测能读到三个资源文件并渲染占位符 | §4.4.2 |
 
 ---
 
@@ -1020,7 +1208,7 @@ fun LlmFailureKind.toFailureKind(): FailureKind = when (this) {
 | `04-智能标签.md §4.3` 已关联文件不支持重新分析 | §5.1、§5.4（I4） |
 | `05-空状态与异常处理.md §2` 分析中/部分失败/全部失败/429/0 标签 | §4.4、§5.1、§5.2、§6 |
 | `01-技术栈与架构.md §3` LLM 接入（BYOK、接口抽象、调用策略、缓存） | 全文；§3.1、§4.2、§4.4 |
-| `02-详细设计总纲.md §5.3` 接口契约（逐字复用） | §3.1 |
+| `02-详细设计总纲.md §5.3` 接口契约（复用；`normalize` 入参改列表见 §3.1 说明） | §3.1 |
 | `02-详细设计总纲.md §6.1` 状态机 | §5.1 |
 | `02-详细设计总纲.md §7` 单 worker 串行 / 写事务 / 单写者 | §7.1、§4.9 |
 | `02-详细设计总纲.md §8` 错误模型映射 | §6 |
@@ -1034,6 +1222,7 @@ fun LlmFailureKind.toFailureKind(): FailureKind = when (this) {
 ## 附：需同步登记的补充项（对 `02` / `03`）
 
 1. **`llm_cache` 表**（本文 §3.5）→ 登记到 `03 §2.1`（entities）、`03 §3`（第 14 个 DAO）、`03 §8`（加表迁移）。
-2. **缓存 key 细化**（本文 §4.8，加入 `model` + `prompt 版本`）→ 更新 `02 §5.3` 的 `CachingLlmNormalizer` 说明。
+2. **缓存 key 细化**（本文 §4.8，加入 `model` + prompt 文件哈希 + 目录指纹）→ 更新 `02 §5.3` 的 `CachingLlmNormalizer` 说明。
 3. **`commitAnalysisSuccess` 事务包装器**（本文 §4.9）→ 登记到 `03 §4`。
 4. **`AnalysisProgress` 定义**（本文 §3.6）→ 登记到 `02 §5.6`。
+5. **`normalize` 入参改列表、返回按索引对齐**（本文 §3.1）→ 同步修订 `02 §5.3` 的接口契约。
