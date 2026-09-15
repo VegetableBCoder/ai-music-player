@@ -2,12 +2,18 @@ package com.aimusic.player.mine.scan
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.aimusic.player.common.error.ErrorText
+import com.aimusic.player.data.entity.ScanSourceEntity
+import com.aimusic.player.data.model.SourceKind
 import com.aimusic.player.data.scan.ScanPhase
 import com.aimusic.player.storage.FileRef
 import com.aimusic.player.storage.StorageAccessLevel
@@ -65,6 +71,67 @@ class ScanScreenContentTest {
     }
 
     // —— 空状态与权限（11 §8.3） ——
+
+    @Test
+    fun `没有扫到音乐_渲染文案与重新选择来源_主按钮变重新扫描且可点`() {
+        var restarted = false
+        renderContent(
+            state = ScanUiState(
+                accessLevel = StorageAccessLevel.FULL,
+                sources = listOf(source()),
+                emptyNotice = ScanEmptyNotice.NO_MUSIC_FOUND,
+            ),
+            onStartScan = { restarted = true },
+        )
+
+        composeRule.onNodeWithText(ErrorText.resolve("scan.empty")).assertIsDisplayed()
+        // 没有新文件可提交，就不该摆出「分析并添加」
+        composeRule.onNodeWithText("分析并添加").assertDoesNotExist()
+
+        // 09 §5.1 给这条空状态的动作是「重新扫描」——扫描收工后主按钮不能是灰的
+        composeRule.onNodeWithText("重新扫描").assertIsEnabled()
+        composeRule.onNodeWithText("重新扫描").performClick()
+        assertThat(restarted).isTrue()
+
+        // 「重新选择来源」要真的开浏览器，而不是只画个按钮
+        composeRule.onNodeWithText("重新选择来源").performClick()
+        composeRule.onNodeWithText("上一级").assertIsDisplayed()
+    }
+
+    @Test
+    fun `没有新文件_渲染文案与重新扫描_不给分析并添加`() {
+        var restarted = false
+        renderContent(
+            state = ScanUiState(
+                accessLevel = StorageAccessLevel.FULL,
+                sources = listOf(source()),
+                emptyNotice = ScanEmptyNotice.NO_NEW_FILES,
+            ),
+            onStartScan = { restarted = true },
+        )
+
+        composeRule.onNodeWithText(ErrorText.resolve("scan.diff.none")).assertIsDisplayed()
+        composeRule.onNodeWithText("分析并添加").assertDoesNotExist()
+        composeRule.onNodeWithText("重新扫描").performClick()
+
+        assertThat(restarted).isTrue()
+    }
+
+    @Test
+    fun `差异里新文件为0_同样不给分析并添加`() {
+        renderContent(
+            state = ScanUiState(
+                accessLevel = StorageAccessLevel.FULL,
+                sources = listOf(source()),
+                phase = ScanPhase.AWAITING_USER,
+                diff = ScanDiffUi(newCount = 0, skippedCount = 3, cleanedCount = 1),
+            ),
+        )
+
+        composeRule.onNodeWithText(ErrorText.resolve("scan.diff.none")).assertIsDisplayed()
+        composeRule.onNodeWithText("分析并添加").assertDoesNotExist()
+        composeRule.onNodeWithText("重新扫描").assertIsDisplayed()
+    }
 
     @Test
     fun `无权限_渲染去授权文案与入口_点击触发回调`() {
@@ -203,7 +270,8 @@ class ScanScreenContentTest {
         // 上一级回到根，再下去一次，确认时回传的是**深层路径**而不是起点
         composeRule.onNodeWithText("上一级").performClick()
         composeRule.onNodeWithText("Music").performClick()
-        composeRule.onNodeWithText("选择音乐来源").performClick()
+        // 空状态块里也有一个同义的「选择音乐来源」，这里要的是弹窗里的那一个
+        composeRule.onNode(hasText("选择音乐来源") and hasAnyAncestor(isDialog())).performClick()
 
         assertThat(picked).isEqualTo("$ROOT/Music")
     }
@@ -219,6 +287,19 @@ class ScanScreenContentTest {
 
         composeRule.onNodeWithText("该目录下没有子目录").assertIsDisplayed()
     }
+
+    /**
+     * 一条扫描来源。
+     *
+     * 空状态的用例必须带上它：真实场景里「扫完一趟发现没有音乐」时来源当然是非空的，
+     * 而 `sources.isEmpty()` 那条分支（「请先选择来源」）在 `when` 里排在更前面 ——
+     * 不给出真实前提，测的就是另一条分支了。
+     */
+    private fun source(path: String = "$ROOT/Music") = ScanSourceEntity(
+        kind = SourceKind.MUSIC,
+        path = path,
+        createdAt = 0L,
+    )
 
     private companion object {
         const val ROOT = "/storage/emulated/0"

@@ -158,12 +158,24 @@ internal fun ScanScreenContent(
             when {
                 !state.permissionGranted -> PermissionNotice(onRequestAllFilesAccess)
                 state.scanning || state.phase == ScanPhase.COMMITTING -> ScanProgress(state)
-                state.diff != null -> DiffNotice(state)
-                state.sources.isEmpty() -> Text(
-                    ErrorText.resolve("scan.need_source"),
-                    modifier = Modifier.padding(vertical = 16.dp),
+                state.diff != null && state.diff.newCount > 0 -> DiffNotice(state)
+                state.sources.isEmpty() -> EmptyNotice(
+                    text = ErrorText.resolve("scan.need_source"),
+                    actionLabel = "选择音乐来源",
+                    onAction = { showPicker = true },
                 )
-                // ANALYZING / DONE：结果由一次性提示（snackbar）说明，这里不再重复一块状态文字
+                // 09 §5.1：这两条是**空状态**（文案 + 动作），不是一次性提示
+                state.diff != null || state.emptyNotice == ScanEmptyNotice.NO_NEW_FILES -> EmptyNotice(
+                    text = ErrorText.resolve("scan.diff.none"),
+                    actionLabel = "重新选择来源",
+                    onAction = { showPicker = true },
+                )
+                state.emptyNotice == ScanEmptyNotice.NO_MUSIC_FOUND -> EmptyNotice(
+                    text = ErrorText.resolve("scan.empty"),
+                    actionLabel = "重新选择来源",
+                    onAction = { showPicker = true },
+                )
+                // ANALYZING：结果由一次性提示（snackbar）说明，这里不再重复一块状态文字
             }
 
             SourceList(state = state, onToggleSource = onToggleSource)
@@ -189,6 +201,16 @@ private fun PermissionNotice(onRequestAllFilesAccess: () -> Unit) {
         Text(ErrorText.resolve("perm.denied"))
         Spacer(Modifier.height(8.dp))
         Button(onClick = onRequestAllFilesAccess) { Text("去授权") }
+    }
+}
+
+/** 空状态（`09 §5.1`）：一句文案 + 一个动作。动作就是这条空状态的出口，不能只留一句灰字。 */
+@Composable
+private fun EmptyNotice(text: String, actionLabel: String, onAction: () -> Unit) {
+    Column(Modifier.padding(vertical = 16.dp)) {
+        Text(text)
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = onAction) { Text(actionLabel) }
     }
 }
 
@@ -308,20 +330,23 @@ private fun ScanBottomBar(
             state.scanning -> Button(onClick = onCancelScan, modifier = Modifier.fillMaxWidth()) {
                 Text("取消")
             }
-            state.diff != null -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onConfirmImport, modifier = Modifier.weight(1f)) {
-                    Text("分析并添加")
+            // 新文件为 0 时不摆「分析并添加」：没有东西可提交，摆出来只会点出一个 NothingToCommit
+            state.diff != null && state.diff.newCount > 0 ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onConfirmImport, modifier = Modifier.weight(1f)) {
+                        Text("分析并添加")
+                    }
+                    OutlinedButton(onClick = onDiscard, modifier = Modifier.weight(1f)) {
+                        Text("放弃")
+                    }
                 }
-                OutlinedButton(onClick = onDiscard, modifier = Modifier.weight(1f)) {
-                    Text("放弃")
-                }
-            }
             else -> Button(
                 onClick = onStartScan,
                 enabled = state.canStart,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("开始扫描")
+                // 09 §5.1 的空状态出口就是「重新扫描」：无事可做时别再说「开始扫描」
+                Text(if (state.nothingNew) "重新扫描" else "开始扫描")
             }
         }
 

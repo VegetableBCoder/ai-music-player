@@ -41,6 +41,14 @@ import javax.inject.Inject
 data class ScanDiffUi(val newCount: Int, val skippedCount: Int, val cleanedCount: Int)
 
 /**
+ * 扫描收工后的空状态（`09 §5.1`）。
+ *
+ * **必须是显式字段，不能从 `phase` + `discovered` 反推**：提交成功后相位同样会落到 `DONE`，
+ * 而 `discovered` 仍是正数 —— 反推就会在刚刚导入完的界面上写出「未发现新文件」。
+ */
+enum class ScanEmptyNotice { NO_MUSIC_FOUND, NO_NEW_FILES }
+
+/**
  * 扫描页状态。
  *
  * **相位直接复用数据层的 `ScanPhase`**：`09 §3.3.3` 的示例另立了一个同名 UI 枚举，
@@ -56,6 +64,7 @@ data class ScanUiState(
     val metadataProcessed: Int = 0,
     val diff: ScanDiffUi? = null,
     val error: AppError? = null,
+    val emptyNotice: ScanEmptyNotice? = null,
     val scanMinDurationMs: Long = 0L,
     val scanMinSizeBytes: Long = 0L,
 ) {
@@ -66,7 +75,20 @@ data class ScanUiState(
 
     val scanning: Boolean get() = phase == ScanPhase.SCANNING || phase == ScanPhase.DIFFING
 
-    val canStart: Boolean get() = permissionGranted && phase == ScanPhase.IDLE
+    /** 半路上：扫描中、提交中、分析中都不该再发起一次扫描。 */
+    val busy: Boolean get() = scanning || phase == ScanPhase.COMMITTING || phase == ScanPhase.ANALYZING
+
+    /**
+     * 能不能发起（或重新发起）一次扫描。
+     *
+     * 原先写成 `phase == IDLE`，于是**扫描结束后主按钮就是灰的** —— 而 `09 §5.1` 要求空状态
+     * 给的出口正是「重新扫描」。所以判据改成「不在半路，且没有一份待决定的差异摆在面前」。
+     */
+    val canStart: Boolean
+        get() = permissionGranted && !busy && (diff == null || diff.newCount == 0)
+
+    /** 无事可做：空状态块与底部主按钮都要据此改口径（`09 §5.1`）。 */
+    val nothingNew: Boolean get() = emptyNotice != null || diff?.newCount == 0
 
     val durationRuleOn: Boolean get() = scanMinDurationMs > 0L
 
@@ -105,11 +127,15 @@ class ScanViewModel @Inject constructor(
     private val _events = Channel<ScanEvent>(Channel.BUFFERED)
     val events: Flow<ScanEvent> = _events.receiveAsFlow()
 
+    /** 空状态由 ViewModel 直接决定（`09 §5.1`），见 [ScanEmptyNotice] 的注释。 */
+    private val _emptyNotice = MutableStateFlow<ScanEmptyNotice?>(null)
+
     val state: StateFlow<ScanUiState> = combine(
         orchestrator.state,
         sources.observeSources(SourceKind.MUSIC),
         settings.scanFilter,
-    ) { session, sourceList, filter ->
+        _emptyNotice,
+    ) { session, sourceList, filter, emptyNotice ->
         ScanUiState(
             accessLevel = session.accessLevel,
             sources = sourceList,
@@ -124,6 +150,7 @@ class ScanViewModel @Inject constructor(
                 )
             },
             error = session.error,
+            emptyNotice = emptyNotice,
             scanMinDurationMs = filter.minDurationMs,
             scanMinSizeBytes = filter.minSizeBytes,
         )
@@ -151,6 +178,7 @@ class ScanViewModel @Inject constructor(
      */
     fun onStartScan() {
         viewModelScope.launch {
+            _emptyNotice.value = null
             refreshPermission()
             if (!state.value.permissionGranted) {
                 _events.send(ScanEvent.RequestAllFilesPermission)
@@ -169,11 +197,15 @@ class ScanViewModel @Inject constructor(
 
     private suspend fun runScan() {
         when (val outcome = orchestrator.scan()) {
-            is ScanOutcome.NoChanges -> {
-                // 分两种：真的一首没扫到，还是扫到了但都是已存在 / 被过滤（后者才该提扫描设置）
-                val key = if (orchestrator.state.value.discovered == 0) "scan.empty" else "scan.diff.none"
-                _events.send(ScanEvent.ShowMessage(ErrorText.resolve(key)))
-            }
+            is ScanOutcome.NoChanges ->
+                // 分两种：真的一首没扫到，还是扫到了但都是已存在 / 被过滤（后者才该提扫描设置）。
+                // 走**持久空状态**而不是一次性提示：09 §5.1 把这两条列为空状态（文案 + 动作），
+                // 一闪而过的 snackbar 会让用户看不到「重新扫描」这个出口。
+                _emptyNotice.value = if (orchestrator.state.value.discovered == 0) {
+                    ScanEmptyNotice.NO_MUSIC_FOUND
+                } else {
+                    ScanEmptyNotice.NO_NEW_FILES
+                }
             is ScanOutcome.Failed -> {
                 if (outcome.kind == FailureKind.PERMISSION) {
                     _events.send(ScanEvent.RequestAllFilesPermission)
@@ -192,11 +224,14 @@ class ScanViewModel @Inject constructor(
     fun onConfirmImport() {
         viewModelScope.launch {
             when (val result = orchestrator.commit()) {
-                is CommitResult.Committed -> _events.send(
-                    ScanEvent.ShowMessage(
-                        ErrorText.resolve("scan.committed", mapOf("count" to result.inserted)),
-                    ),
-                )
+                is CommitResult.Committed -> {
+                    _emptyNotice.value = null
+                    _events.send(
+                        ScanEvent.ShowMessage(
+                            ErrorText.resolve("scan.committed", mapOf("count" to result.inserted)),
+                        ),
+                    )
+                }
                 is CommitResult.NothingToCommit ->
                     _events.send(ScanEvent.ShowMessage(result.reason))
                 CommitResult.Cancelled ->
@@ -209,7 +244,10 @@ class ScanViewModel @Inject constructor(
 
     /** 「放弃」——不写库（`04 §4.1`）。 */
     fun onDiscard() {
-        viewModelScope.launch { orchestrator.discard() }
+        viewModelScope.launch {
+            _emptyNotice.value = null
+            orchestrator.discard()
+        }
     }
 
     fun onCancelScan() {
