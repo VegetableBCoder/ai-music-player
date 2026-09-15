@@ -44,4 +44,14 @@ dependencies {
     implementation(libs.hilt.android)
     implementation(libs.androidx.hilt.navigation.compose)
     ksp(libs.hilt.compiler)
+
+    // 扫描页的渲染测试（09 §8、11 §8.3）跑真机 androidTest，与 Room 测试同一个决定。
+    // :core:testing 已用 api 暴露 junit / truth / mockk / coroutines-test。
+    androidTestImplementation(project(":core:testing"))
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    // createComposeRule 需要一个宿主 Activity，由它提供（只在 debug 变体里）
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

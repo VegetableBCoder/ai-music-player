@@ -10,10 +10,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -25,7 +27,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -42,7 +43,12 @@ import com.aimusic.player.data.scan.ScanPhase
 import com.aimusic.player.storage.FileRef
 
 /**
- * 文件扫描（`09 §3.2.9`）。
+ * 文件扫描（`09 §3.2.9`）—— **有状态外壳**。
+ *
+ * 它只做三件与「外面」有关的事：取 ViewModel、把一次性事件变成副作用（权限弹窗 / snackbar）、
+ * 把状态交给 [ScanScreenContent]。界面本身一行都不在这里 —— 那样 UI 测试才能不碰 DI
+ * （`09 §8` 原先的示例是「传一个 fake ViewModel」，实测更省事的做法是把屏幕拆成
+ * 有状态外壳 + 无状态内容，见 `09 §8` 的落地补充）。
  *
  * 三个入口按 QQ 音乐扫描页的形态（真机对照过）：
  * - **开始扫描**（主按钮）：没有来源时自动走「一键扫描」，不逼用户先选目录
@@ -53,7 +59,6 @@ import com.aimusic.player.storage.FileRef
  * 本期（Phase 3）不含「选择音乐来源」的独立选择器页面：一键扫描 + 目录浏览器已覆盖需求
  * `01 §2.4` 的两条路径。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScanScreen(
     onRequestAllFilesAccess: () -> Unit,
@@ -62,9 +67,6 @@ fun ScanScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-
-    var showSettings by remember { mutableStateOf(false) }
-    var showPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.refreshPermission() }
 
@@ -78,18 +80,62 @@ fun ScanScreen(
         }
     }
 
+    ScanScreenContent(
+        state = state,
+        onStartScan = viewModel::onStartScan,
+        onCancelScan = viewModel::onCancelScan,
+        onConfirmImport = viewModel::onConfirmImport,
+        onDiscard = viewModel::onDiscard,
+        onToggleSource = viewModel::onToggleSource,
+        onToggleDurationRule = viewModel::onToggleDurationRule,
+        onToggleSizeRule = viewModel::onToggleSizeRule,
+        onRequestAllFilesAccess = onRequestAllFilesAccess,
+        onPickDirectory = viewModel::onAddSource,
+        listDirectories = viewModel::listDirectories,
+        primaryRootPath = viewModel.primaryRootPath,
+        snackbarHostState = snackbarHostState,
+    )
+}
+
+/**
+ * 扫描页的**全部**渲染（无状态）。
+ *
+ * 所有依赖都从参数进来：给一个 [ScanUiState] 就画出对应界面，点按钮就走对应回调。
+ * 回调大多有 `= {}` 默认值 —— 一条测试只传它真正要断言的那两三个。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ScanScreenContent(
+    state: ScanUiState,
+    onStartScan: () -> Unit = {},
+    onCancelScan: () -> Unit = {},
+    onConfirmImport: () -> Unit = {},
+    onDiscard: () -> Unit = {},
+    onToggleSource: (Long, Boolean) -> Unit = { _, _ -> },
+    onToggleDurationRule: (Boolean) -> Unit = {},
+    onToggleSizeRule: (Boolean) -> Unit = {},
+    onRequestAllFilesAccess: () -> Unit = {},
+    onPickDirectory: (String) -> Unit = {},
+    listDirectories: suspend (String) -> List<FileRef> = { emptyList() },
+    primaryRootPath: String = "/",
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
+) {
+    var showSettings by remember { mutableStateOf(false) }
+    var showPicker by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = { TopAppBar(title = { Text("文件扫描") }) },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
             ScanBottomBar(
                 state = state,
-                onStartScan = viewModel::onStartScan,
-                onCancelScan = viewModel::onCancelScan,
-                onConfirmImport = viewModel::onConfirmImport,
-                onDiscard = viewModel::onDiscard,
+                onStartScan = onStartScan,
+                onCancelScan = onCancelScan,
+                onConfirmImport = onConfirmImport,
+                onDiscard = onDiscard,
                 onCustomScan = { showPicker = true },
                 onToggleSettings = { showSettings = !showSettings },
+                onRequestAllFilesAccess = onRequestAllFilesAccess,
             )
         },
     ) { innerPadding ->
@@ -103,8 +149,8 @@ fun ScanScreen(
                 ScanSettingsSection(
                     durationRuleOn = state.durationRuleOn,
                     sizeRuleOn = state.sizeRuleOn,
-                    onToggleDuration = viewModel::onToggleDurationRule,
-                    onToggleSize = viewModel::onToggleSizeRule,
+                    onToggleDuration = onToggleDurationRule,
+                    onToggleSize = onToggleSizeRule,
                 )
                 HorizontalDivider()
             }
@@ -120,19 +166,16 @@ fun ScanScreen(
                 // ANALYZING / DONE：结果由一次性提示（snackbar）说明，这里不再重复一块状态文字
             }
 
-            SourceList(
-                state = state,
-                onToggleSource = viewModel::onToggleSource,
-            )
+            SourceList(state = state, onToggleSource = onToggleSource)
         }
     }
 
     if (showPicker) {
         DirectoryPickerDialog(
-            startPath = viewModel.primaryRootPath,
-            onListDirectories = viewModel::listDirectories,
+            startPath = primaryRootPath,
+            onListDirectories = listDirectories,
             onPick = { path ->
-                viewModel.onAddSource(path)
+                onPickDirectory(path)
                 showPicker = false
             },
             onDismiss = { showPicker = false },
@@ -182,6 +225,9 @@ private fun DiffNotice(state: ScanUiState) {
 
 /**
  * 扫描设置（需求 `01 §2.5`）。就地展开而不是弹窗：两条规则各自独立可关。
+ *
+ * 不在面板里再放一次「扫描设置」标题：展开它的按钮就叫这个名字，重复的文本会让
+ * `onNodeWithText` 变成二义（未来的测试得靠下标猜），也让同一句话在一屏上出现两次。
  */
 @Composable
 private fun ScanSettingsSection(
@@ -191,7 +237,6 @@ private fun ScanSettingsSection(
     onToggleSize: (Boolean) -> Unit,
 ) {
     Column(Modifier.padding(vertical = 8.dp)) {
-        Text("扫描设置", style = MaterialTheme.typography.titleSmall)
         RuleRow("不扫描短于 60 秒的音频", durationRuleOn, onToggleDuration)
         RuleRow("不扫描小于 100 KB 的文件", sizeRuleOn, onToggleSize)
         Text(
@@ -201,10 +246,21 @@ private fun ScanSettingsSection(
     }
 }
 
+/**
+ * 一行规则。
+ *
+ * 整行可点（`toggleable` + `Checkbox(onCheckedChange = null)`）：只让那个小方块可点的话，
+ * 用户点文字没反应；a11y 上也应当是「整行是一个开关」，而不是「一个复选框加一句说明」。
+ */
 @Composable
 private fun RuleRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(value = checked, onValueChange = onCheckedChange),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null)
         Text(label)
     }
 }
@@ -244,6 +300,7 @@ private fun ScanBottomBar(
     onDiscard: () -> Unit,
     onCustomScan: () -> Unit,
     onToggleSettings: () -> Unit,
+    onRequestAllFilesAccess: () -> Unit,
 ) {
     Column(Modifier.padding(PaddingValues(16.dp))) {
         // 相位决定主按钮：扫描中可取消；有差异时是「分析并添加」/「放弃」
@@ -269,10 +326,15 @@ private fun ScanBottomBar(
         }
 
         if (state.degraded) {
-            Text(
-                "仅可扫描媒体库（未获得「所有文件访问」）",
-                style = MaterialTheme.typography.bodySmall,
-            )
+            // 10 §4.3：降级时置灰入口 + 给「去授权」入口 —— 光置灰等于让用户卡在这里
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "仅扫描媒体库",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onRequestAllFilesAccess) { Text("去授权") }
+            }
         }
 
         Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) {
