@@ -185,8 +185,7 @@ class ScanViewModel @Inject constructor(
                 return@launch
             }
             if (state.value.sources.isEmpty()) {
-                addPresetSources()
-                if (state.value.sources.isEmpty()) {
+                if (!addPresetSources()) {
                     _events.send(ScanEvent.ShowMessage(ErrorText.resolve(KEY_ONE_CLICK_EMPTY)))
                     return@launch
                 }
@@ -310,14 +309,27 @@ class ScanViewModel @Inject constructor(
         }
     }
 
-    /** 一键扫描的预设目录（相对主存储根）；只采纳**实际存在**的那些。 */
-    private suspend fun addPresetSources() {
+    /**
+     * 一键扫描的预设目录（相对主存储根）；只采纳**实际存在**的那些。
+     *
+     * 返回「现在有来源了没有」，**而不是让调用方回头再读一次 `state.value.sources`**：
+     * `state` 是 `stateIn`，来源写库之后要绕一圈才回到这个 flow。补完预设立刻去读，读到的
+     * 往往还是空 —— 于是用户点了「开始扫描」，目录加进去了，却弹出「没有找到常见的音乐目录」
+     * 并且**不扫描**。用 `add()` 的返回值判断就没有这个时序依赖。
+     */
+    private suspend fun addPresetSources(): Boolean {
+        var hasSource = false
         PRESET_DIRS.forEach { relative ->
             val path = "$primaryRoot/$relative"
             if (storage.exists(path) && storage.isDirectory(path)) {
-                sources.add(SourceKind.MUSIC, path)
+                // AlreadyExists 也算：来源确实在那儿（可能是 flow 还没推过来）
+                when (sources.add(SourceKind.MUSIC, path)) {
+                    is AddSourceResult.Added, is AddSourceResult.AlreadyExists -> hasSource = true
+                    is AddSourceResult.Invalid -> Unit
+                }
             }
         }
+        return hasSource
     }
 
     private companion object {

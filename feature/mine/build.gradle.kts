@@ -47,6 +47,7 @@ dependencies {
 
     // 扫描页的渲染测试（09 §8、11 §8.3）跑真机 androidTest，与 Room 测试同一个决定。
     // :core:testing 已用 api 暴露 junit / truth / mockk / coroutines-test。
+    testImplementation(project(":core:testing"))
     androidTestImplementation(project(":core:testing"))
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
