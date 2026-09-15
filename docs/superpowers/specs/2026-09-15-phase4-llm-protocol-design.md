@@ -235,7 +235,9 @@ core/llm/src/main/resources/prompt/
 | 情形 | 处理 |
 | --- | --- |
 | **整批** JSON 不可解析 / 缺 `results` / `results` 非数组 | 整批 `INVALID_OUTPUT`。**不做逐个重发兜底**（见二期） |
-| 某项缺 `file_index` / index 越界 / index 重复 | 该文件 `FAILED(INVALID_OUTPUT)`，**同批其余照常 `LINKED`** |
+| 某项缺 `file_index` / index 重复 | 该文件 `FAILED(INVALID_OUTPUT)`，**同批其余照常 `LINKED`** |
+| 某文件在本批响应里**没有任何对应 item**（`results` 数量少于输入文件数） | 该文件 `FAILED(INVALID_OUTPUT)`，**同批其余照常 `LINKED`** |
+| 返回的 `file_index` **越界**（不对应批内任何文件，即多出的项） | **忽略该条** + `logger.warn`，**不算失败、不影响其余任何文件** |
 | 某项 `canonical_title` 空 / `artists` 缺失或空数组 | 同上 |
 | 某组 `category` 不在**当前有效分类** | 丢弃该组 + `logger.warn`，**不算失败**（AI 不得新增分类，需求 `04 §2.1`） |
 | 某条标签 `name` 为空 | 丢弃该条 + `logger.warn`，不算失败 |
@@ -259,7 +261,7 @@ core/llm/src/main/resources/prompt/
 ## 11. 界面
 
 - **`AnalysisRunScreen`**：进度仍逐文件（`FileUpdated` 的 `status`），但"正在分析"的语义是**当前批次**；429 退避期间该文件保持 `ANALYZING`、不计失败（沿用 `05 §4.7`）。文案沿用 `11 §5.1`。
-- **`SettingsScreen`**：协议类型（下拉：openai / responses / anthropic）、base url、api key（掩码显示，写入走已有的 `ApiKeyStore`）、模型名 —— 四项必填；重试次数、超时、`max_tokens`、`supportsJsonSchema` 收在「高级」。**内置提供商预设**只作"填表助手"：选中后填入 base url / 协议 / 模型名，用户仍可改；**只落最终值，不落"选了哪个预设"**（否则改了 url 还显示"DeepSeek 官方"，是骗人的状态）。
+- **`SettingsScreen`**：协议类型（下拉：openai / responses / anthropic）、base url、api key（掩码显示，写入走已有的 `ApiKeyStore`）、模型名 —— 四项必填，**未填全四项时「保存」按钮禁用，并逐项标出缺哪一项**；重试次数、超时、`max_tokens`、`supportsJsonSchema` 收在「高级」。**内置提供商预设**只作"填表助手"：选中后填入 base url / 协议 / 模型名，用户仍可改；**只落最终值，不落"选了哪个预设"**（否则改了 url 还显示"DeepSeek 官方"，是骗人的状态）。
 - 预设表放 `:core:llm` 的**常量表**（纯 Kotlin、可单测），UI 只读它。
 
 ---
@@ -278,6 +280,7 @@ core/llm/src/main/resources/prompt/
 | `05 §4.7` | 补 `529 → SERVER`（不重试） |
 | `05 §4.8` | 缓存 key 补 **prompt 文件哈希**与**目录指纹** |
 | `05 §8` | 测试要点补批量 / 分组结构 / 哈希失效 / schema 防漂移 / 失败分类 |
+| `01-技术栈与架构.md` | 设置页四项（base url / api key / 协议类型 / 模型名）与高级项；逐文件调用 → **一次一批**（默认 20）；缓存 key 补 `model` / prompt 文件哈希 / 目录指纹；§7 模块清单 **12 个**；UI 组件归属 `:core:ui` |
 | `02 §5.3`、`§5.6` | `normalize` 签名（`§5.3`）与编排器的批量语义（`§5.6` 编排器）；若写了"一次一个请求"一并改 |
 | `03 §2.2` | `llm_cache` 注释里的 key 组成 |
 | `03 §6` | `llm_provider` 语义 = **协议类型**；新增 `llm_batch_size` / `llm_max_tokens` |
@@ -369,6 +372,20 @@ core/llm/src/main/resources/prompt/
 - **Then** 该 index 对应的文件 `FAILED(INVALID_OUTPUT)`，其余 19 个照常 `LINKED`（§9.2）
 - 对应测试：§13 表「失败分类（条目级 / 整批级）」
 
+### G16 · 批量·模型少返回一项（缺整个 item）→ 该文件 `FAILED`、其余 `LINKED`
+
+- **Given** 一次请求含 20 个文件，模型返回**可解析**的 `results`
+- **When** 模型只回了 19 项，其中某个文件在本批响应里**没有任何对应 item**
+- **Then** 该文件 `FAILED(INVALID_OUTPUT)`，**同批其余 19 个照常 `LINKED`**（§9.2）
+- 对应测试：§13 表「失败分类（条目级 / 整批级）」
+
+### G17 · 批量·模型多返回一项（越界 `file_index`）→ 忽略该条、不算失败
+
+- **Given** 一次请求含 20 个文件
+- **When** 模型返回的某一项 `file_index` **越界**（不对应批内任何文件）
+- **Then** **忽略该条** + `logger.warn`，**不算失败、不影响批内任何文件**（20 个文件状态照常）（§9.2）
+- 对应测试：§13 表「失败分类（条目级 / 整批级）」
+
 **缓存（§8）**
 
 ### G9 · 改 `system.txt` 后重跑 → key 全变、全 miss
@@ -424,6 +441,13 @@ core/llm/src/main/resources/prompt/
 - **Then** **不显示该预设名**（状态为自定义）—— 因为只落最终值、不落「选了哪个预设」（§11）
 - 对应测试：待补（设置页交互）
 
+### G18 · 设置页·四项未填全 → 「保存」按钮禁用
+
+- **Given** 打开 `SettingsScreen`
+- **When** base url / api key / 协议类型 / 模型名四项**未填全**（缺任意一项或多项）
+- **Then** **保存按钮处于禁用状态**，并**逐项标出缺哪一项**（§11）
+- 对应测试：待补（设置页交互）
+
 ---
 
 ## 14. 已定/待办的边界
@@ -431,7 +455,3 @@ core/llm/src/main/resources/prompt/
 - **已定**：三协议 = 内部模型 + 适配器；强制 JSON 分层降级；批量默认 20；`tag_groups` 分组；prompt/schema 外置 + 哈希入缓存 key；调用失败不重发、条目级失败不兜底。
 - **后续由用户提供**：内置预设表的具体值（协议类型 / base url / 默认模型名），以及真机验收用的**真实 API Key**。
 - **二期**：整批不可解析时的逐文件兜底；标签库规模控制（当前判定：不需要，token 成本可接受）。
-- **待办（本文档尚未定清楚，进实施计划前须补）**：
-  - **批量回填·少返回一项**：模型遗漏某个 `file_index`（某文件在全批里没有任何对应项）时该文件的状态 —— §9.2 只定义了「某项缺 `file_index`」「index 重复 / 越界」，未定义「有文件、但无 item」。
-  - **批量回填·多返回一项**：多出的**全新越界 `index`**（不对应批内任何文件）如何处置 —— §9.2 的「index 越界 → 该文件 `FAILED`」里没有「该文件」可指（歧义：忽略该项，还是整批失败）。
-  - **设置页·未填全四项时「保存」的行为**：§11 只说四项必填，未定保存按钮是**禁用**、点击**报错提示**、还是允许保存留空。

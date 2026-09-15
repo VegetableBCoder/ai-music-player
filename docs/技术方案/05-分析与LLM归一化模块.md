@@ -118,7 +118,7 @@ enum class LlmFailureKind { NETWORK, AUTH, SERVER, INVALID_OUTPUT, TIMEOUT }
 ```
 
 > **批量语义**：调用失败（网络 / 超时 / 429 / 5xx / AUTH）使列表内每一项取同一结果（整批同命运、不按文件重发）；解析失败只把对应索引置 `Failure(INVALID_OUTPUT)`，其余照常（见 §4.5、§6）。
-> **与 `02 §5.3` 的差异**：`NormalizeRequest` / `NormalizeResult` / `NormalizeOutcome` / `LlmFailureKind` 逐字复用；**唯一改动是 `normalize` 入参由单个 `NormalizeRequest` 改为列表、返回按索引对齐**，需同步修订 `02 §5.3`。
+> **与 `02 §5.3` 的差异**：`NormalizeResult` / `LlmFailureKind` 逐字复用；批量口径下 **`normalize` 一次收整批、返回按索引对齐**，`02 §5.3` 已同步为批量契约。
 
 `02 §5.3` 中 `TagRef` / `TagAssignment` 以注释形式给出，此处固化为数据类：
 
@@ -139,8 +139,8 @@ data class LlmConfig(
     val maxRetries: Int,                  // DataStore: llm_max_retries，即 429 重试上限 N
     val batchSize: Int = 20,              // 一次请求的文件数（DataStore: llm_batch_size）
     val maxTokens: Int = 8_192,           // DataStore: llm_max_tokens
-    val connectTimeoutMs: Long = 15_000,
-    val readTimeoutMs: Long = 90_000,     // LLM 生成较慢，读超时放宽
+    val connectTimeoutMs: Long = 15_000,     // DataStore: llm_connect_timeout_ms
+    val readTimeoutMs: Long = 90_000,     // DataStore: llm_read_timeout_ms（LLM 生成较慢，读超时放宽）
     val callTimeoutMs: Long = 120_000,
     val maxTagsPerCategory: Int = 2       // 每分类标签数量上限（prompt 约束 0~n 的 n）
 )
@@ -268,7 +268,7 @@ interface LlmCacheDao {
 }
 ```
 
-> **⚠ 本表为对 `03-数据层设计.md` 的补充，需同步登记到 03**：新增 `LlmCacheEntity` 到 `MusicDatabase.entities`（`03 §2.1`）、新增第 14 个 DAO（`03 §3`）、随系统 DB 版本**加表不迁移**（`03 §8`——首个发布版本起用 `Migration` 加表）。缓存表**不参与业务级联删除**：删除歌曲实体**不清空缓存**（缓存按 `cache_key` 内容寻址，与实体无外键关系，属可复用资产）。
+> **⚠ 本表为对 `03-数据层设计.md` 的补充，已登记到 03**：`LlmCacheEntity` 已加入 `MusicDatabase.entities`（`03 §2.1`）、`LlmCacheDao` 为第 12 个 DAO（`03 §3`）、随系统 DB 版本**加表不迁移**（`03 §8`——首个发布版本起用 `Migration` 加表）。缓存表**不参与业务级联删除**：删除歌曲实体**不清空缓存**（缓存按 `cache_key` 内容寻址，与实体无外键关系，属可复用资产）。
 
 ## 3.6 `AnalysisProgress`（进度事件，Flow 上报）
 
@@ -728,7 +728,7 @@ private fun parseOne(obj: JsonObject, req: NormalizeRequest): NormalizeOutcome {
     }
     // 每分类数量上限兜底（prompt 已约束，此处防御）
     val capped = assignments.groupBy { it.category }
-        .flatMap { (_, list) -> list.distinctBy { it.name }.take(req.maxTagsPerCategory) }
+        .flatMap { (_, list) -> list.distinctBy { it.name }.take(LlmConfig.maxTagsPerCategory) }   // 上限来自 LlmConfig，不在 NormalizeRequest 上
 
     return NormalizeOutcome.Success(NormalizeResult(title, artists, capped))
 }
@@ -902,7 +902,7 @@ object CacheKeyProvider {
 | prompt 文件哈希（`system.txt` + `user.txt` + `schema.json` 内容的 sha256） | **取代**手工 `PROMPT_VERSION`：prompt 外置后手工版本号必被遗忘（改了 prompt 却一直吃旧缓存）；用文件哈希则改文件即失效 |
 | 目录指纹（分类名 + 标签名的规范化串 sha256） | 用户**新建分类**后，同一文件若只按旧 key 命中缓存会永远缺这个新分类的标签；把它纳入 key 才能让新分类生效 |
 
-> 说明：`02 §5.3` 给出缓存 key 的初版为 `sha1(fileName + metadata)`；本文档细化为**必须包含 `model`、prompt 文件哈希与目录指纹**（否则换模型 / 改标签体系 / 新建分类后会命中过期结果）。此细化**扩展而非冲突**，需同步登记到 `02 §5.3`。
+> 说明：缓存 key 的完整组成为 `sha256(fileName ␟ 元数据指纹 ␟ model ␟ prompt 文件哈希 ␟ 目录指纹)`；其中 `model`、prompt 文件哈希与目录指纹**必须包含**（否则换模型 / 改标签体系 / 新建分类后会命中过期结果）。此细化**扩展而非冲突**，已登记到 `02 §5.3`。
 
 **命中缓存的流程**
 
@@ -1221,8 +1221,8 @@ fun LlmFailureKind.toFailureKind(): FailureKind = when (this) {
 
 ## 附：需同步登记的补充项（对 `02` / `03`）
 
-1. **`llm_cache` 表**（本文 §3.5）→ 登记到 `03 §2.1`（entities）、`03 §3`（第 14 个 DAO）、`03 §8`（加表迁移）。
-2. **缓存 key 细化**（本文 §4.8，加入 `model` + prompt 文件哈希 + 目录指纹）→ 更新 `02 §5.3` 的 `CachingLlmNormalizer` 说明。
+1. **`llm_cache` 表**（本文 §3.5）→ 已登记到 `03 §2.1`（entities）、`03 §3`（第 12 个 DAO）、`03 §8`（加表迁移）。
+2. **缓存 key 细化**（本文 §4.8，加入 `model` + prompt 文件哈希 + 目录指纹）→ 已更新 `02 §5.3` 的 `CachingLlmNormalizer` 说明。
 3. **`commitAnalysisSuccess` 事务包装器**（本文 §4.9）→ 登记到 `03 §4`。
 4. **`AnalysisProgress` 定义**（本文 §3.6）→ 登记到 `02 §5.6`。
-5. **`normalize` 入参改列表、返回按索引对齐**（本文 §3.1）→ 同步修订 `02 §5.3` 的接口契约。
+5. **`normalize` 入参改列表、返回按索引对齐**（本文 §3.1）→ 已同步修订 `02 §5.3` 的接口契约。
