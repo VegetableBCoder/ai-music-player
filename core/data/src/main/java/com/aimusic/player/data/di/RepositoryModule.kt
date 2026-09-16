@@ -35,6 +35,9 @@ import com.aimusic.player.llm.cache.DirectoryFingerprint
 import com.aimusic.player.llm.directNormalizer
 import com.aimusic.player.llm.prompt.PromptBuilder
 import com.aimusic.player.llm.prompt.PromptResources
+import com.aimusic.player.data.analysis.AnalysisOrchestrator
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 /**
  * 数据层的装配（`10 §5.4`）。
@@ -82,7 +85,21 @@ object RepositoryModule {
      */
     @Provides
     @Singleton
-    fun provideAnalysisTrigger(): AnalysisTrigger = AnalysisTrigger {}
+    fun provideAnalysisTrigger(
+        orchestrator: AnalysisOrchestrator,
+        @ApplicationScope scope: CoroutineScope,
+    ): AnalysisTrigger = AnalysisTrigger { runId ->
+        // 冷 Flow 由应用级作用域独占驱动：界面离开也不影响它跑完；界面看 state / progress 两个热镜像。
+        scope.launch { orchestrator.analyzePending(runId).collect {} }
+    }
+
+    @Provides
+    @Singleton
+    fun provideAnalysisOrchestrator(
+        db: MusicDatabase,
+        metadataReader: MetadataReader,
+        normalizer: LlmNormalizer,
+    ): AnalysisOrchestrator = AnalysisOrchestrator(db, metadataReader, normalizer)
 
     @Provides
     @Singleton
@@ -101,6 +118,8 @@ object RepositoryModule {
         settings: SettingsRepository,
         scanSources: ScanSourceRepository,
         @PrimaryStorageRoot primaryRoot: String,
+        analysisTrigger: AnalysisTrigger,
+        lyricHandoff: LyricHandoff,
     ): ScanOrchestrator = ScanOrchestrator(
         context = context,
         storage = storage,
@@ -112,6 +131,9 @@ object RepositoryModule {
         settings = settings,
         scanSources = scanSources,
         primaryRoot = primaryRoot,
+        // 原先这两处**没传**，于是默认值落到了空 SAM —— 扫描完永不触发分析（潜伏 bug，Task 8 修）
+        analysisTrigger = analysisTrigger,
+        lyricHandoff = lyricHandoff,
     )
 
     // ---------- Phase 4：LLM 归一化链（P3-T8/T9 定） ----------
