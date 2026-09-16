@@ -19,7 +19,13 @@
 - 不用通用 `Result` 包装：失败用既有 sealed 层次（`NormalizeOutcome` / `LlmFailureKind` / `AppError`），异常只作 `cause`。
 - androidTest 的反引号函数名不得含空格（配置期检查会直接让构建失败；中文允许，空格/`+`/`.` 一律不行）。
 - 真机跑 instrumented 测试前必须先唤醒设备：`adb shell input keyevent KEYCODE_WAKEUP`。
-- **与 P1 的边界**：P2 **不消费** P1 的 `LlmCall` / `LlmHttpResult` / `ProtocolAdapter` / `ProtocolKind`。`parse` 只吃适配器还原后的 JSON 字符串（spec §3 硬约束 1）；反过来 P2 产出 `JsonEnforcementPolicy`（Task 6）**由 P1 的适配器调用**：P1 把 `ProtocolKind.OPENAI` 翻成 `protocolSupportsJsonMode = true` 传进来。
+- **与 P1 的边界**：P2 **不消费** P1 的 `LlmCall` / `LlmHttpResult` / `ProtocolAdapter` / `ProtocolKind`。`parse` 只吃适配器还原后的 JSON 字符串（spec §3 硬约束 1）。
+- **⚠ 执行 P1-T3 时已实地修正的归属（Task 6 必须按此改，别照本文其它处写法）**：`JsonEnforcementPolicy` 这个**类型**已归 P1 —— 见 `core/llm/src/main/java/com/aimusic/player/llm/JsonEnforcementPolicy.kt`，是 sealed interface，取值 `Schema(schema)` / `JsonObject` / `PromptOnly`，P1 的三个适配器都按它分支（已跑绿）。**P2 不得再声明同名类型**（原 Task 6 写的 `object JsonEnforcementPolicy { fun of(...): JsonEnforcement }` 会与之冲突，且多出的 `JsonEnforcement` 也是重复类型）。
+  - P2 在 Task 6 只做**推导**：把能力位翻成 P1 的取值，建议落成顶层函数
+    `fun jsonEnforcementFor(supportsJsonSchema: Boolean, protocolSupportsJsonMode: Boolean): JsonEnforcementPolicy`，
+    L1 → `JsonEnforcementPolicy.Schema(schema)`（schema 由调用方传入或另开重载）、L2 → `JsonObject`、L3 → `PromptOnly`。
+  - Task 6 里所有 `JsonEnforcementPolicy.of(...)` 的测试与实现、以及 `Create: .../parse/JsonEnforcementPolicy.kt`，
+    都按上面这一条改名（文件名建议 `parse/JsonEnforcementDerivation.kt`）。
 - **与 P3 的边界**：P2 产出 `PromptResources.promptHash()`（Task 3）与 `object DirectoryFingerprint { fun of(categories: List<String>, tags: List<TagRef>): String }`（Task 5），P3 的缓存 key 直接取用，不再自行计算（P3 注入的 `(NormalizeRequest) -> String` lambda 由它适配）。
 
 ---
@@ -135,7 +141,7 @@ Co-authored-by: CommandCodeBot <noreply@commandcode.ai>"
 落地 `05 §3.1` 锁定的 `:core:llm` 内部类型（`NormalizeResult` / `TagAssignment` 已在 `:core:common`，此处只 import；`:core:llm` 契约的**两字段** `TagRef` 在此定义 —— `:core:common` 的三字段同名类型已按拍板改名为 `TagProjection`），并给出一对条目级失败的 `cause` 与一个默认 logger。同时把模块的测试基建（`:core:testing` 暴露的 JUnit4 + Truth）与序列化依赖一次性配好。
 
 **Files:**
-- Modify: `core/llm/build.gradle.kts`
+- ~~Modify: `core/llm/build.gradle.kts`~~（**已完成**：P1-T1 已加 kotlin-serialization 插件、kotlinx-serialization-json、okhttp、`mockwebserver` 测试依赖。本任务只需确认，不要再改，否则会与 P1 重复）
 - Create: `core/llm/src/main/java/com/aimusic/player/llm/NormalizeContract.kt`
 - Create: `core/llm/src/main/java/com/aimusic/player/llm/log/NoopLogger.kt`
 - Test: `core/llm/src/test/java/com/aimusic/player/llm/NormalizeContractTest.kt`
@@ -146,7 +152,7 @@ Co-authored-by: CommandCodeBot <noreply@commandcode.ai>"
   - `data class TagRef(val name: String, val category: String)`（**两字段**，`:core:llm` 契约类型，`com.aimusic.player.llm.TagRef`；与 `:core:common` 的三字段 `TagProjection` **不是一回事**）
   - `data class NormalizeRequest(val fileName: String, val metadata: AudioMetadata?, val categories: List<String>, val tags: List<TagRef>)`
   - `sealed interface NormalizeOutcome { data class Success(val result: NormalizeResult); data class RateLimited(val retryAfterMs: Long?); data class Failure(val kind: LlmFailureKind, val cause: Throwable?) }`
-  - `enum class LlmFailureKind { NETWORK, AUTH, SERVER, INVALID_OUTPUT, TIMEOUT }`
+  - `enum class LlmFailureKind { NETWORK, AUTH, SERVER, INVALID_OUTPUT, TIMEOUT }` —— **不在此定义！** P1-T2 已在 `core/llm/src/main/java/com/aimusic/player/llm/LlmFailureKind.kt` 建好（连同 `toFailureKind()` 映射），本任务只 import 使用。原先重复声明会造成同名类型冲突，执行 P1-T2 时已实地发现。
   - `class MissingField(val field: String) : IllegalStateException`
   - `class DuplicateIndex(val fileIndex: Int) : IllegalStateException`
   - `object NoopLogger : com.aimusic.player.common.log.Logger`
@@ -911,6 +917,8 @@ Co-authored-by: CommandCodeBot <noreply@commandcode.ai>"
 ### Task 6: 强制 JSON 三层降级的判定 + 容错抽取
 
 落地 spec §4 的分层降级：`JsonEnforcementPolicy` 判定 L1/L2/L3（P1 的适配器调用它决定怎么声明）；`JsonSalvage` 是 L3 的容错抽取（剥 ``` 围栏、截首个 `{` 到末个 `}`）。
+
+> **⚠ 本任务的类型归属已改**（P1-T3 执行时实地修正）：`JsonEnforcementPolicy` **类型本体由 P1 定义**（sealed interface：`Schema(schema)` / `JsonObject` / `PromptOnly`，见 `core/llm/src/main/java/com/aimusic/player/llm/JsonEnforcementPolicy.kt`，已跑绿）。本任务**只做推导**，不要再声明该类型，也不要引入 `JsonEnforcement`。下面步骤里的 `JsonEnforcementPolicy.of(...)` 一律改成顶层函数 `jsonEnforcementFor(supportsJsonSchema, protocolSupportsJsonMode): JsonEnforcementPolicy`，文件名改为 `parse/JsonEnforcementDerivation.kt`，断言对象相应变为 `JsonEnforcementPolicy.Schema/JsonObject/PromptOnly`。
 
 **Files:**
 - Create: `core/llm/src/main/java/com/aimusic/player/llm/parse/JsonEnforcementPolicy.kt`

@@ -53,7 +53,7 @@ core/llm/src/main/kotlin/com/aimusic/player/llm/
   RetryingLlmNormalizer.kt    # 429 退避装饰器（复用 :core:common 的 RetryPolicy）
   CachingLlmNormalizer.kt     # 缓存装饰器
   LlmCache.kt                 # 缓存读写抽象（实现在 :core:data）
-  adapter/openai/LlmApi.kt    # OPENAI 适配器私有 Retrofit 接口
+  adapter/openai/LlmApi.kt    # 【已废弃，见本行下方说明】原设计的 OPENAI 适配器私有 Retrofit 接口
   adapter/openai/dto/*.kt     # OPENAI 私有 DTO：ChatCompletionRequest/Response、JsonSchema、Message
 core/llm/src/main/resources/prompt/
   system.txt                  # 硬性规则（§4.4.1 + 批量两条）
@@ -223,6 +223,17 @@ interface ProtocolAdapter {
 ```
 
 ## 3.4 `OPENAI` 适配器的 Retrofit 接口（私有）
+
+> **Phase 4-1 实现记录（2026-09-15）：本节改为 OkHttp 直发，Retrofit 已弃用。**
+>
+> 原设计是「一个方言一个私有 Retrofit 接口」，但实现时发现：协议层采用的是**一份协议无关的中间表示
+> `HttpRequestSpec(url, headers, bodyJson)` + 三套适配器**的模型。在这个模型下 Retrofit 的
+> 「一个接口一个端点」反而要求把三套接口各写一遍，而适配器输出的已经是完整的请求对象，
+> 直接交给 OkHttp 发出去即可。
+>
+> 实际产出：`ProtocolAdapter.encode()` 产出 `HttpRequestSpec`，`DirectProvider` 用 OkHttp 执行，
+> 再交回 `ProtocolAdapter.decode()` 解析。**下面的 Retrofit 草图保留为历史记录，不再对应代码。**
+> 相关的 `LlmApi` / `ChatCompletionRequest` / `ChatCompletionResponse` 亦不再存在。
 
 ```kotlin
 interface LlmApi {                       // 仅 OPENAI 适配器使用
