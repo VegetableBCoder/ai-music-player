@@ -8,7 +8,9 @@ import com.aimusic.player.common.model.AudioMetadata
 import com.aimusic.player.common.model.NormalizeResult
 import com.aimusic.player.data.db.MusicDatabase
 import com.aimusic.player.data.entity.AnalysisRunEntity
+import com.aimusic.player.data.entity.CategoryEntity
 import com.aimusic.player.data.entity.MusicFileEntity
+import com.aimusic.player.data.entity.TagEntity
 import com.aimusic.player.data.model.AnalysisStatus
 import com.aimusic.player.data.model.RunStatus
 import com.aimusic.player.llm.LlmNormalizer
@@ -107,6 +109,73 @@ class AnalysisOrchestratorTest {
                     addedAt = 0L,
                 )
             },
+        )
+    }
+
+    @Test
+    fun `目录每批实时读取_不是快照`() {
+        runBlocking {
+            givenPendingFiles(21)
+            givenCategory("音乐类型")
+            givenTag("流行", "音乐类型")
+            val seenCategories = mutableListOf<List<String>>()
+            val fake = FakeNormalizer { reqs ->
+                seenCategories += reqs[0].categories
+                reqs.map { successFor(it.fileName) }
+            }
+            val runId = db.analysisRunDao().createRun(AnalysisRunEntity(status = RunStatus.RUNNING, startedAt = 0L))
+
+            build(fake).analyzePending(runId).toList()
+
+            assertThat(seenCategories).hasSize(2)   // 两批各读一次目录
+        }
+    }
+
+    @Test
+    fun `成功逐文件累加analyzed_ok_并把文件置LINKED`() {
+        runBlocking {
+            givenPendingFiles(3)
+            givenCategory("音乐类型")
+            givenTag("流行", "音乐类型")
+            val fake = FakeNormalizer { reqs -> reqs.map { successFor(it.fileName) } }
+            val runId = db.analysisRunDao().createRun(AnalysisRunEntity(status = RunStatus.RUNNING, startedAt = 0L))
+
+            val events = build(fake).analyzePending(runId).toList()
+
+            assertThat(db.analysisRunDao().latest()!!.analyzedOk).isEqualTo(3)
+            assertThat(db.musicFileDao().pendingForAnalysis()).isEmpty()
+            assertThat(
+                events.filterIsInstance<AnalysisProgress.FileUpdated>()
+                    .last { it.status == AnalysisStatus.LINKED }.linkedEntityId,
+            ).isNotNull()
+        }
+    }
+
+    @Test
+    fun `已经LINKED的文件再次触发_零网络请求`() {
+        runBlocking {
+            givenPendingFiles(2)
+            givenCategory("音乐类型")
+            givenTag("流行", "音乐类型")
+            val fake = FakeNormalizer { reqs -> reqs.map { successFor(it.fileName) } }
+
+            val run1 = db.analysisRunDao().createRun(AnalysisRunEntity(status = RunStatus.RUNNING, startedAt = 0L))
+            build(fake).analyzePending(run1).toList()
+            val callsAfterFirst = fake.calls.size
+
+            val run2 = db.analysisRunDao().createRun(AnalysisRunEntity(status = RunStatus.RUNNING, startedAt = 0L))
+            build(fake).analyzePending(run2).toList()
+
+            assertThat(fake.calls.size).isEqualTo(callsAfterFirst)   // 入口 pendingForAnalysis 已滤掉 LINKED（I4）
+        }
+    }
+
+    private suspend fun givenCategory(name: String): Long =
+        db.categoryDao().insertCategory(CategoryEntity(name = name))
+
+    private suspend fun givenTag(name: String, category: String) {
+        db.tagDao().insertTagIgnoring(
+            TagEntity(name = name, categoryId = db.categoryDao().categoryIdByName(category)!!, createdAt = 0L),
         )
     }
 }

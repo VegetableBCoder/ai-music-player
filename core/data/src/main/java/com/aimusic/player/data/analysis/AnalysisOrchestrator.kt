@@ -7,6 +7,8 @@ import com.aimusic.player.data.model.RunStatus
 import com.aimusic.player.llm.LlmNormalizer
 import com.aimusic.player.llm.NormalizeOutcome
 import com.aimusic.player.llm.NormalizeRequest
+import androidx.room.withTransaction
+import com.aimusic.player.storage.FileRef
 import com.aimusic.player.storage.MetadataReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -76,6 +78,7 @@ class AnalysisOrchestrator(
         var done = 0
         var ok = 0
         var failed = 0
+        var lastEmit = 0L
 
         publish(AnalysisProgress.Started(runId, total))
         stateFlow.update {
@@ -101,35 +104,41 @@ class AnalysisOrchestrator(
             // 目录每批实时读一次（不是快照）：分析期间用户可能新加了标签/分类。
             val categories = db.categoryDao().currentNames()
             val tags = db.tagDao().currentTagRefs()
-            val requests = batchFiles.map {
+            val requests = batchFiles.map { file ->
                 NormalizeRequest(
-                    fileName = it.fileName,
-                    metadata = null,
+                    fileName = file.fileName,
+                    metadata = metadataReader.read(FileRef(file.path, file.fileName, file.size, 0)),
                     categories = categories,
                     tags = tags,
                 )
             }
 
             val outcomes = normalizer.normalize(requests)
-            outcomes.forEachIndexed { index, outcome ->
-                when (outcome) {
-                    is NormalizeOutcome.Success -> ok++
-                    else -> failed++
+            batchFiles.forEachIndexed { index, file ->
+                when (val outcome = outcomes.getOrNull(index)) {
+                    is NormalizeOutcome.Success -> {
+                        // 挂靠与计数**同事务**（`05 §4.9`）：否则会出现「文件已关联但批次没记账」的中间态
+                        val entityId = db.withTransaction {
+                            db.songDao().attachAnalysisResult(file.id, outcome.result, now())
+                            db.analysisRunDao().bumpAnalyzedOk(runId)
+                            db.musicFileDao().entityIdOf(file.id)
+                        }
+                        ok++
+                        publish(
+                            AnalysisProgress.FileUpdated(
+                                file.id, file.fileName, AnalysisStatus.LINKED, linkedEntityId = entityId,
+                            ),
+                        )
+                    }
+                    else -> failed++   // Task 4 处理细节
                 }
                 done++
-                publish(AnalysisProgress.Running(done = done, total = total, ok = ok, failed = failed))
-                val file = batchFiles.getOrNull(index) ?: return@forEachIndexed
-                publish(
-                    AnalysisProgress.FileUpdated(
-                        fileId = file.id,
-                        fileName = file.fileName,
-                        status = if (outcome is NormalizeOutcome.Success) {
-                            AnalysisStatus.LINKED
-                        } else {
-                            AnalysisStatus.FAILED
-                        },
-                    ),
-                )
+                stateFlow.update { it.copy(done = done, ok = ok, failed = failed) }
+                val t = now()
+                if (t - lastEmit >= progressThrottleMs || done == total) {   // 进度节流（`05 §7.2`）
+                    lastEmit = t
+                    publish(AnalysisProgress.Running(done, total, ok, failed))
+                }
             }
         }
 
