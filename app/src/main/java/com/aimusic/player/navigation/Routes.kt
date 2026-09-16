@@ -13,3 +13,9 @@ data object MineRoute
 
 @Serializable
 data object ScanRoute
+
+@Serializable
+data object AnalysisRoute
+
+@Serializable
+data object SettingsRoute

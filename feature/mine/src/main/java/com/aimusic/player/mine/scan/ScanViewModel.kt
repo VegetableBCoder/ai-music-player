@@ -102,6 +102,9 @@ sealed interface ScanEvent {
     data object RequestMediaPermission : ScanEvent
 
     data class ShowMessage(val text: String) : ScanEvent
+
+    /** 提交成功 → 跳最近分析记录（Phase 3 的空窗在这里收口）。 */
+    data object NavigateToAnalysis : ScanEvent
 }
 
 /**
@@ -230,6 +233,8 @@ class ScanViewModel @Inject constructor(
                             ErrorText.resolve("scan.committed", mapOf("count" to result.inserted)),
                         ),
                     )
+                    // 先提示"已提交"，再跳转 —— 顺序反了用户就看不到提交结果了
+                    _events.send(ScanEvent.NavigateToAnalysis)
                 }
                 is CommitResult.NothingToCommit ->
                     _events.send(ScanEvent.ShowMessage(result.reason))

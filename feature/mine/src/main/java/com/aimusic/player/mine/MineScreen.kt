@@ -25,10 +25,16 @@ import androidx.compose.ui.unit.dp
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MineScreen(onOpenScan: () -> Unit) {
+fun MineScreen(
+    onOpenScan: () -> Unit,
+    onOpenAnalysis: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
+) {
     Scaffold(topBar = { TopAppBar(title = { Text("我的") }) }) { innerPadding ->
         Column(Modifier.padding(innerPadding)) {
             EntryRow("文件扫描", onOpenScan)
+            EntryRow("最近分析记录", onOpenAnalysis)
+            EntryRow("设置", onOpenSettings)
             HorizontalDivider()
         }
     }

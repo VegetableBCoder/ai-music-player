@@ -64,6 +64,7 @@ fun ScanScreen(
     onRequestAllFilesAccess: () -> Unit,
     onRequestMediaPermission: () -> Unit,
     viewModel: ScanViewModel = hiltViewModel(),
+    onNavigateToAnalysis: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -75,6 +76,7 @@ fun ScanScreen(
             when (event) {
                 ScanEvent.RequestAllFilesPermission -> onRequestAllFilesAccess()
                 ScanEvent.RequestMediaPermission -> onRequestMediaPermission()
+                ScanEvent.NavigateToAnalysis -> onNavigateToAnalysis()
                 is ScanEvent.ShowMessage -> snackbarHostState.showSnackbar(event.text)
             }
         }

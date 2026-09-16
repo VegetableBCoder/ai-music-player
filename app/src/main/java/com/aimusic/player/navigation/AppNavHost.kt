@@ -8,7 +8,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.aimusic.player.mine.MineScreen
+import com.aimusic.player.mine.analysis.AnalysisRunScreen
 import com.aimusic.player.mine.scan.ScanScreen
+import com.aimusic.player.mine.settings.SettingsScreen
 
 /**
  * 导航图（`09 §4.1`）。

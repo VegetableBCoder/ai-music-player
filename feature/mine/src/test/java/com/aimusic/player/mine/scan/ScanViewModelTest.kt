@@ -26,6 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -328,5 +329,26 @@ class ScanViewModelTest {
 
     private companion object {
         const val ROOT = "/storage/emulated/0"
+    }
+
+    @Test
+    fun `提交成功后_先提示再跳分析页`() = runTest(main) {
+        givenSource()
+        coEvery { orchestrator.commit() } returns
+            CommitResult.Committed(runId = 7L, inserted = 3, cleaned = 0)
+        val vm = newViewModel()
+
+        val collected = mutableListOf<ScanEvent>()
+        val watcher = launch { vm.events.collect { collected += it } }
+
+        vm.onConfirmImport()
+
+        // 等两条事件都到（顺序有意义：先"已提交"提示，再跳转）
+        val deadline = System.currentTimeMillis() + 5_000
+        while (collected.size < 2 && System.currentTimeMillis() < deadline) delay(10)
+        watcher.cancel()
+
+        assertThat(collected[0]).isInstanceOf(ScanEvent.ShowMessage::class.java)
+        assertThat(collected[1]).isEqualTo(ScanEvent.NavigateToAnalysis)
     }
 }
