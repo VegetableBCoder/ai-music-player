@@ -59,4 +59,8 @@ abstract class CategoryDao {
     /** 主要分类**不互斥**，可多选（`04`）。 */
     @Transaction
     open suspend fun setMainCategory(id: Long, isMain: Boolean) = setMain(id, isMain)
+
+    /** 当前有效分类名（每批实时读取一次，非快照 —— `04 §3.3`、spec §10）。 */
+    @Query("SELECT name FROM category ORDER BY sort_order, name")
+    abstract suspend fun currentNames(): List<String>
 }

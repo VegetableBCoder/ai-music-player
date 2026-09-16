@@ -35,6 +35,25 @@ interface AnalysisRunDao {
            WHERE arf.run_id = :runId ORDER BY f.file_name""",
     )
     fun observeRunFiles(runId: Long): Flow<List<RunFileRow>>
+
+    /** 「最近分析记录」页订阅（`09 §3.2.10`）。 */
+    @Query("SELECT * FROM analysis_run ORDER BY started_at DESC LIMIT 1")
+    fun observeLatest(): Flow<AnalysisRunEntity?>
+
+    /** 逐文件累加（spec §10：一批里成功 18 失败 2 → 18/2）。 */
+    @Query("UPDATE analysis_run SET analyzed_ok = analyzed_ok + 1 WHERE id = :runId")
+    suspend fun bumpAnalyzedOk(runId: Long)
+
+    @Query("UPDATE analysis_run SET failed_count = failed_count + 1 WHERE id = :runId")
+    suspend fun bumpFailed(runId: Long)
+
+    /** 结束：COMPLETED 或 ABORTED，两者都写 finished_at（`05 §4.9`）。 */
+    @Query("UPDATE analysis_run SET status = :status, finished_at = :finishedAt WHERE id = :runId")
+    suspend fun finish(runId: Long, status: RunStatus, finishedAt: Long)
+
+    /** 「移除记录」：只解绑批次清单，**不删 music_file**。 */
+    @Query("DELETE FROM analysis_run_file WHERE run_id = :runId AND file_id IN (:fileIds)")
+    suspend fun unlinkFiles(runId: Long, fileIds: List<Long>): Int
 }
 
 @Dao
@@ -58,4 +77,5 @@ interface ScanSourceDao {
 
     @Query("UPDATE scan_source SET enabled = :enabled WHERE id = :id")
     suspend fun setEnabled(id: Long, enabled: Boolean)
-}
+
+    }

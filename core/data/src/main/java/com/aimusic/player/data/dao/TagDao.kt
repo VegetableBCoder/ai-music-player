@@ -13,6 +13,7 @@ import com.aimusic.player.data.error.TagRejectReason
 import com.aimusic.player.data.model.EntityTagRow
 import com.aimusic.player.data.model.TagListItem
 import kotlinx.coroutines.flow.Flow
+import com.aimusic.player.llm.TagRef
 
 @Dao
 abstract class TagDao {
@@ -139,4 +140,11 @@ abstract class TagDao {
 
         detach(entityIds, tagNames)
     }
+
+    /** 当前有效标签全量。分类**名**投影为 `TagRef.category`（两字段契约，决定 #3）。 */
+    @Query(
+        """SELECT t.name AS name, c.name AS category
+           FROM tag t JOIN category c ON c.id = t.category_id ORDER BY t.name""",
+    )
+    abstract suspend fun currentTagRefs(): List<TagRef>
 }
