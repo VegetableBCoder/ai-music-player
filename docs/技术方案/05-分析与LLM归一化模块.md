@@ -29,7 +29,7 @@
 ## 1.3 依赖谁
 
 ```
-:core:llm      ─→ :core:common        （TextNormalizer、Logger、BackoffPolicy、Dispatcher）
+:core:llm      ─→ :core:common        （TextNormalizer、Logger、RetryPolicy、Dispatcher）
 :core:data     ─→ :core:llm,:core:storage,:core:common   （AnalysisOrchestrator 编排 + Room 事务 + 缓存表）
 :feature:mine  ─→ :core:data          （分析进度页 / 最近分析记录页 调用 Orchestrator）
 ```
@@ -49,9 +49,8 @@ core/llm/src/main/kotlin/com/aimusic/player/llm/
   adapter/*.kt                # 三套方言适配器：OpenAiAdapter / ResponsesAdapter / AnthropicAdapter
   PromptBuilder.kt            # 读外置 prompt 资源、渲染占位符、prompt 文件哈希
   NormalizeParser.kt          # 结构化输出解析、字段校验、tag_groups 摊平、标签过滤
-  BackoffPolicy.kt            # 退避参数与算法
   DirectProvider.kt           # 方言适配器 + OkHttp，协议无关（不再直连固定路径）
-  RetryingLlmNormalizer.kt    # 429 退避装饰器
+  RetryingLlmNormalizer.kt    # 429 退避装饰器（复用 :core:common 的 RetryPolicy）
   CachingLlmNormalizer.kt     # 缓存装饰器
   LlmCache.kt                 # 缓存读写抽象（实现在 :core:data）
   adapter/openai/LlmApi.kt    # OPENAI 适配器私有 Retrofit 接口
@@ -69,6 +68,7 @@ core/data/src/main/kotlin/com/aimusic/player/data/
 core/common/src/main/kotlin/com/aimusic/player/common/
   text/TextNormalizer.kt      # 标题/歌手规范化 + artistsKey 生成
   util/Sleeper.kt             # 可注入的 sleep（测试用假时钟）
+  retry/RetryPolicy.kt        # 429 退避参数与算法（已实现、已测；本模块复用，不再自带 BackoffPolicy）
 ```
 
 | 类 | 关键签名 | 职责 |
@@ -97,7 +97,7 @@ interface LlmNormalizer {
 
 data class NormalizeRequest(
     val fileName: String,
-    val metadata: AudioMetadata?,   // 来自 :core:storage. MetadataReader
+    val metadata: AudioMetadata?,   // 类型在 :core:common（com.aimusic.player.common.model）；值由 :core:storage 的 MetadataReader 产出
     val categories: List<String>,   // 当前有效分类（实时读取，非快照）
     val tags: List<TagRef>          // 当前有效标签
 )
@@ -144,14 +144,15 @@ data class LlmConfig(
     val callTimeoutMs: Long = 120_000,
     val maxTagsPerCategory: Int = 2       // 每分类标签数量上限（prompt 约束 0~n 的 n）
 )
-
-data class BackoffPolicy(
-    val initialDelayMs: Long = 1_000,     // 1s
-    val factor: Long = 2,                 // 2 的幂
-    val maxDelayMs: Long = 60_000,        // 上限 60s
-    val maxRetries: Int                  // = LlmConfig.maxRetries（N）
-)
 ```
+
+> **退避参数复用 `:core:common` 的 `RetryPolicy`**（`common/retry/RetryPolicy.kt`，**已实现且已测**）：
+> `maxRetries`（默认 3）/ `baseDelayMs = 1s` / `factor = 2` / `maxDelayMs = 60s` / `jitterRatio = 0.2`，
+> 方法 `delayFor(attempt, retryAfterMs, random)` 与 `shouldRetry(kind, attempt)`。
+> 其中 `RetryPolicy.maxRetries = LlmConfig.maxRetries`（N）。**本模块不再定义 `BackoffPolicy`** —— 同一个东西不该有两份，
+> 以已测的那份为准；退避算法见 §4.7。
+>
+> 注：`01 §2` / `10` 里出现的 `BackoffPolicy.EXPONENTIAL` 是 **`androidx.work.BackoffPolicy`**（WorkManager 层），与此无关、保持不动。
 
 ## 3.3 协议抽象与三套方言适配器
 
@@ -339,7 +340,7 @@ val normalizer: LlmNormalizer =
                 http = HttpTransport(DirectProvider.createHttpClient(config)),
                 config = config, promptBuilder = promptBuilder, parser = parser
             ),
-            policy = BackoffPolicy(maxRetries = config.maxRetries),
+            policy = RetryPolicy(maxRetries = config.maxRetries),   // :core:common（§3.2）
             onBackoff = { ev -> progressSink.tryEmit(ev) }
         ),
         cache = roomLlmCache,
@@ -800,8 +801,9 @@ object TextNormalizer {
 ```kotlin
 class RetryingLlmNormalizer(
     private val delegate: LlmNormalizer,
-    private val policy: BackoffPolicy,
+    private val policy: RetryPolicy,                 // :core:common（common/retry/RetryPolicy.kt）
     private val sleeper: Sleeper = RealSleeper,      // 可注入假时钟，单测用
+    private val random: Random = Random.Default,     // 注入固定随机源，可断言精确时长
     private val onBackoff: (BackoffEvent) -> Unit = {}
 ) : LlmNormalizer {
 
@@ -812,23 +814,14 @@ class RetryingLlmNormalizer(
             // 429 是批级现象：整批同命运，任一项 RateLimited 即整批退避重试
             val limited = outs.firstOrNull { it is NormalizeOutcome.RateLimited } as? NormalizeOutcome.RateLimited
                 ?: return outs                                   // 无 429 → 原样返回（Success / Failure 不自动处理）
-            if (attempt >= policy.maxRetries) return outs        // 重试耗尽 → 上抛，交由编排器置 FAILED
-            val delayMs = backoffDelayMs(attempt, limited.retryAfterMs, policy)
-            onBackoff(BackoffEvent(currentCoroutineContext(), attempt + 1, delayMs))
+            attempt++
+            if (!policy.shouldRetry(FailureKind.RATE_LIMIT, attempt)) return outs   // 重试耗尽 → 上抛，交由编排器置 FAILED
+            val delayMs = policy.delayFor(attempt, limited.retryAfterMs, random)    // ★ 退避 + 抖动口径见 RetryPolicy
+            onBackoff(BackoffEvent(currentCoroutineContext(), attempt, delayMs))
             sleeper.sleep(delayMs)                               // ★ 退避期间 orchestrator 仍在 await，
                                                                  //   analysis_status 保持 ANALYZING，不计失败
-            attempt++
         }
     }
-}
-
-fun backoffDelayMs(attempt: Int, retryAfterMs: Long?, policy: BackoffPolicy): Long {
-    // ① Retry-After 优先（服务端指示等待多久）
-    val base = retryAfterMs
-        ?: (policy.initialDelayMs * (1L shl attempt))   // ② 退避：1s, 2s, 4s, 8s …
-    val capped = base.coerceAtMost(policy.maxDelayMs)   // ③ 上限 60s
-    val half = capped / 2
-    return Random.nextLong(half, capped + 1)            // ④ 抖动：区间 [cap/2, cap]，避免重试风暴
 }
 
 fun parseRetryAfterMs(header: String?): Long? = when {
@@ -840,8 +833,7 @@ fun parseRetryAfterMs(header: String?): Long? = when {
 }
 ```
 
-- **重试上限 N**：`policy.maxRetries = LlmConfig.maxRetries`（DataStore `llm_max_retries`，`03 §6`）。
-- **`Retry-After` 优先**：非空时覆盖指数基数，但仍受 `maxDelayMs=60s` 上限约束。
+- **退避算法复用 `RetryPolicy.delayFor`，不再自带 `backoffDelayMs`**：`baseDelayMs × factor^(attempt−1)` 封顶 `maxDelayMs`，再乘 **`[1−jitterRatio, 1]`** 抖动；`Retry-After` 优先（取 `max(本地退避, Retry-After)`，仍以 60s 封顶）。**同一个东西不该有两份**——抖动口径以 `:core:common` 已测的 `RetryPolicy` 为准（`11 §3.4`），本模块不再维护第二套。
 - **退避期间保持 ANALYZING、不计失败**：`sleeper.sleep` 在 `normalize()` 的 `await` 内完成；`AnalysisOrchestrator` 在调用前已置 `ANALYZING`，调用返回前既不改状态、也不递增 `failed_count`。同时 `onBackoff` 让编排器 emit `AnalysisProgress.Retrying`，前端展示"重试中"（`05 §2`）。
 - **其他错误不自动处理**：只有 `RateLimited` 进入重试；`Failure(NETWORK/AUTH/SERVER/INVALID_OUTPUT/TIMEOUT)` 直接返回（`01 §3.3`、`02 §6.1`）。其中 **`529` overloaded 归 `SERVER`，不重试**（与需求 `00 §4.3`「5xx 不自动重试」一致）；只有 `429` 进退避。
 

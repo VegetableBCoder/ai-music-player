@@ -57,7 +57,8 @@ val moduleDependencyRules: Map<String, Set<String>> = mapOf(
     ":core:testing" to emptySet(),
 
     ":core:storage" to setOf(":core:common"),
-    ":core:data" to setOf(":core:storage", ":core:common"),
+    // :core:llm 见 02 §2 落地补充（Phase 4）：RoomLlmCache 实现 :core:llm 的 LlmCache 接口
+    ":core:data" to setOf(":core:storage", ":core:llm", ":core:common"),
     ":core:llm" to setOf(":core:common"),
     ":core:playback" to setOf(":core:data", ":core:common"),
     // 注：02 §2 原先未规定 core:ui 的依赖。3e 起垂直切片（界面跟着功能走），扫描界面就要用
