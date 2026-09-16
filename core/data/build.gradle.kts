@@ -33,6 +33,7 @@ ksp {
 dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:storage"))
+    implementation(project(":core:llm"))   // P3-T8：RoomLlmCache 要实现 :core:llm 的接口（守卫白名单已放开）
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
 
