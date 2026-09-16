@@ -63,7 +63,11 @@ class SettingsRepositoryTest {
             model = "gpt-4o-mini",
             supportsJsonSchema = true,
             maxRetries = 5,
-        )
+                maxTokens = SettingsRepository.DEFAULT_MAX_TOKENS,
+                connectTimeoutMs = SettingsRepository.DEFAULT_CONNECT_TIMEOUT_MS,
+                readTimeoutMs = SettingsRepository.DEFAULT_READ_TIMEOUT_MS,
+                batchSize = SettingsRepository.DEFAULT_BATCH_SIZE,
+            )
         repo.setPermissionHintShown(true)
         repo.setScanFilter(minDurationMs = 0L, minSizeBytes = 5_000L)
 
