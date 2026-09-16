@@ -1,6 +1,8 @@
 package com.aimusic.player.data.analysis
 
 import com.aimusic.player.data.db.MusicDatabase
+import com.aimusic.player.data.entity.AnalysisRunEntity
+import com.aimusic.player.data.entity.AnalysisRunFileCrossRef
 import com.aimusic.player.data.entity.MusicFileEntity
 import com.aimusic.player.common.error.FailureKind
 import com.aimusic.player.data.model.AnalysisStatus
@@ -67,6 +69,29 @@ class AnalysisOrchestrator(
         if (!mutex.tryLock()) return@flow
         try {
             val files = db.musicFileDao().pendingForAnalysis()
+            emitAll(driveLocked(runId, files))
+        } finally {
+            mutex.unlock()
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * 手动重试（`05 §5.4` / I4）。**冷 Flow** —— 相对 `05 §4.9` 的 `suspend fun retry` 是一处有意偏差：
+     * 返回冷流才能把取消权交给调用方，界面离开即 ABORTED。
+     *
+     * 只为**给定文件**建批次：不放大成 `pendingForAnalysis()` 全量（否则"重试一个失败文件"
+     * 会顺带重跑所有待分析文件，白花 token）。
+     */
+    fun retry(fileIds: List<Long>): Flow<AnalysisProgress> = flow {
+        if (!mutex.tryLock()) return@flow
+        try {
+            val wanted = fileIds.toSet()
+            // I4 兜底：即使调用方传了已 LINKED 的 id，这里也只取仍未分析成功的
+            val files = db.musicFileDao().pendingForAnalysis().filter { it.id in wanted }
+            val runId = db.analysisRunDao().createRun(
+                AnalysisRunEntity(status = RunStatus.RUNNING, startedAt = now(), newCount = files.size),
+            )
+            db.analysisRunDao().linkFiles(files.map { AnalysisRunFileCrossRef(runId, it.id) })
             emitAll(driveLocked(runId, files))
         } finally {
             mutex.unlock()

@@ -280,4 +280,40 @@ class AnalysisOrchestratorTest {
         }
         throw AssertionError("等待条件超时（${timeoutMs}ms）")
     }
+
+    @Test
+    fun `retry只为给定文件建批次_不扫全量pending`() {
+        runBlocking {
+            givenPendingFiles(5)
+            givenCategory("音乐类型")
+            givenTag("流行", "音乐类型")
+            val target = db.musicFileDao().pendingForAnalysis().take(2).map { it.id }
+            val fake = FakeNormalizer { reqs -> reqs.map { successFor(it.fileName) } }
+
+            val events = build(fake).retry(target).toList()
+
+            assertThat(fake.calls.single()).hasSize(2)
+            assertThat(db.analysisRunDao().latest()!!.analyzedOk).isEqualTo(2)
+            assertThat(db.musicFileDao().pendingForAnalysis()).hasSize(3)
+            assertThat((events.first() as AnalysisProgress.Started).total).isEqualTo(2)
+        }
+    }
+
+    @Test
+    fun `retry传入已LINKED的id_零网络请求`() {
+        runBlocking {
+            givenPendingFiles(1)
+            givenCategory("音乐类型")
+            givenTag("流行", "音乐类型")
+            val fake = FakeNormalizer { reqs -> reqs.map { successFor(it.fileName) } }
+            val orchestrator = build(fake)
+            val id = db.musicFileDao().pendingForAnalysis().single().id
+            orchestrator.retry(listOf(id)).toList()
+            val calls = fake.calls.size
+
+            orchestrator.retry(listOf(id)).toList()   // 第二次：该文件已 LINKED
+
+            assertThat(fake.calls.size).isEqualTo(calls)   // I4 兜底生效
+        }
+    }
 }
