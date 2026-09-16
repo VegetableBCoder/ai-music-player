@@ -39,13 +39,30 @@ fun AppNavHost(
         modifier = modifier.padding(innerPadding),
     ) {
         composable<MineRoute> {
-            MineScreen(onOpenScan = { navController.navigate(ScanRoute) })
+            MineScreen(
+                onOpenScan = { navController.navigate(ScanRoute) },
+                onOpenAnalysis = { navController.navigate(AnalysisRoute) },
+                onOpenSettings = { navController.navigate(SettingsRoute) },
+            )
+        }
+
+        composable<AnalysisRoute> {
+            AnalysisRunScreen(
+                onOpenSettings = { navController.navigate(SettingsRoute) },
+                onOpenSong = { /* 歌曲详情属 Phase 5，暂不导航 */ },
+            )
+        }
+
+        composable<SettingsRoute> {
+            SettingsScreen()
         }
 
         composable<ScanRoute> {
             ScanScreen(
                 onRequestAllFilesAccess = onRequestAllFilesAccess,
                 onRequestMediaPermission = onRequestMediaPermission,
+                // Phase 3 的空窗收口：扫描提交成功后直接带用户去看分析记录
+                onNavigateToAnalysis = { navController.navigate(AnalysisRoute) },
             )
         }
     }

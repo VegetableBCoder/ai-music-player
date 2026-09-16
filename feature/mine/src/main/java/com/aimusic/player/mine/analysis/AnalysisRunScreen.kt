@@ -113,10 +113,14 @@ private fun statusLabel(row: AnalysisFileUi): String = when {
     row.retrying -> ErrorText.resolve("analysis.row.retrying")
     row.status == AnalysisStatus.ANALYZING -> ErrorText.resolve("analysis.row.analyzing")
     row.status == AnalysisStatus.LINKED -> ErrorText.resolve("analysis.row.linked")
-    row.status == AnalysisStatus.FAILED ->
-        ErrorText.resolve("analysis.row.failed") + row.errorKind?.let { kind ->
-            "（" + ErrorText.resolve("analysis.row.failed.reason.$kind".lowercase()) + "）"
-        }.orEmpty().let { if (it.contains("unknown")) "" else it }
+    row.status == AnalysisStatus.FAILED -> {
+        val base = ErrorText.resolve("analysis.row.failed")
+        // 只在**键确实存在**时才附原因 —— 拼出来的键取不到会静默退化成 unknown 兜底文案，
+        // 界面上就会显示"出错了，请查看详情"这种没有信息量的话（真机上就是这么照出来的）。
+        val reasonKey = row.errorKind?.let { "analysis.row.failed.reason.${it.lowercase()}" }
+        val reason = reasonKey?.let { ErrorText.resolve(it) }?.takeIf { it != ErrorText.resolve(null) }
+        if (reason == null) base else "$base（$reason）"
+    }
     else -> ErrorText.resolve("analysis.row.pending")
 }
 
