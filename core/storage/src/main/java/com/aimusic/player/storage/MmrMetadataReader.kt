@@ -1,5 +1,7 @@
 package com.aimusic.player.storage
 
+import com.aimusic.player.common.model.AudioMetadata
+
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever

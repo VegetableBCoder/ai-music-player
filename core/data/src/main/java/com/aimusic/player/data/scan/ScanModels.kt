@@ -3,7 +3,7 @@ package com.aimusic.player.data.scan
 import com.aimusic.player.common.error.AppError
 import com.aimusic.player.common.error.FailureKind
 import com.aimusic.player.data.model.LyricSource
-import com.aimusic.player.storage.AudioMetadata
+import com.aimusic.player.common.model.AudioMetadata
 import com.aimusic.player.storage.FileRef
 import com.aimusic.player.storage.StorageAccessLevel
 

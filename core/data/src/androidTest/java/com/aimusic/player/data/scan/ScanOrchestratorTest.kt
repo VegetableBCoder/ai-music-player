@@ -18,7 +18,7 @@ import com.aimusic.player.data.representativeIdOf
 import com.aimusic.player.data.scalar
 import com.aimusic.player.data.settings.SettingsRepository
 import com.aimusic.player.storage.AudioFormats
-import com.aimusic.player.storage.AudioMetadata
+import com.aimusic.player.common.model.AudioMetadata
 import com.aimusic.player.storage.FileRef
 import com.aimusic.player.storage.MediaStoreAudioEntry
 import com.aimusic.player.storage.MediaStoreAudioSource

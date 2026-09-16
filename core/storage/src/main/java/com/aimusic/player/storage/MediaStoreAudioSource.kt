@@ -1,5 +1,7 @@
 package com.aimusic.player.storage
 
+import com.aimusic.player.common.model.AudioMetadata
+
 /** 媒体库通道的一条结果：路径与元数据一起给出（`04 §4.2`）。 */
 data class MediaStoreAudioEntry(val ref: FileRef, val metadata: AudioMetadata)
 

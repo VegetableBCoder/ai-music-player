@@ -1,5 +1,7 @@
 package com.aimusic.player.storage
 
+import com.aimusic.player.common.model.AudioMetadata
+
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import java.util.Collections
