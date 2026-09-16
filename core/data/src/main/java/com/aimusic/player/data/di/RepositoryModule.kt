@@ -21,6 +21,20 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
+import com.aimusic.player.common.retry.RetryPolicy
+import com.aimusic.player.common.util.RealSleeper
+import com.aimusic.player.common.util.Sleeper
+import com.aimusic.player.data.cache.RoomLlmCache
+import com.aimusic.player.llm.LlmCache
+import com.aimusic.player.llm.LlmConfig
+import com.aimusic.player.llm.LlmConfigProvider
+import com.aimusic.player.llm.LlmNormalizer
+import com.aimusic.player.llm.ProtocolKind
+import com.aimusic.player.llm.buildLlmNormalizer
+import com.aimusic.player.llm.cache.DirectoryFingerprint
+import com.aimusic.player.llm.directNormalizer
+import com.aimusic.player.llm.prompt.PromptBuilder
+import com.aimusic.player.llm.prompt.PromptResources
 
 /**
  * 数据层的装配（`10 §5.4`）。
@@ -98,5 +112,48 @@ object RepositoryModule {
         settings = settings,
         scanSources = scanSources,
         primaryRoot = primaryRoot,
+    )
+
+    // ---------- Phase 4：LLM 归一化链（P3-T8/T9 定） ----------
+
+    @Provides
+    @Singleton
+    fun provideSleeper(): Sleeper = RealSleeper
+
+    @Provides
+    @Singleton
+    fun providePromptResources(): PromptResources = PromptResources()
+
+    @Provides
+    @Singleton
+    fun providePromptBuilder(resources: PromptResources): PromptBuilder =
+        PromptBuilder(resources, maxTagsPerCategory = 2)
+
+    /** ⚠ 临时桥接：P4 设置页落地前配置取不到真值（baseUrl/key 全空）——只保证图可启动，不能真发请求。P4 落地时**替换**本绑定。 */
+    @Provides
+    @Singleton
+    fun provideLlmConfigProvider(): LlmConfigProvider = LlmConfigProvider {
+        LlmConfig(protocol = ProtocolKind.OPENAI, baseUrl = "", model = "", apiKey = "", supportsJsonSchema = false)
+    }
+
+    @Provides
+    @Singleton
+    fun provideLlmCache(db: MusicDatabase): LlmCache = RoomLlmCache(db.llmCacheDao())
+
+    @Provides
+    @Singleton
+    fun provideLlmNormalizer(
+        configProvider: LlmConfigProvider,
+        promptBuilder: PromptBuilder,
+        cache: LlmCache,
+        sleeper: Sleeper,
+    ): LlmNormalizer = buildLlmNormalizer(
+        direct = directNormalizer(configProvider, promptBuilder),
+        cache = cache,
+        model = configProvider.current().model,
+        promptHash = promptBuilder::promptHash,
+        dirFingerprint = { req -> DirectoryFingerprint.of(req.categories, req.tags) },
+        policy = RetryPolicy(maxRetries = configProvider.current().maxRetries),
+        sleeper = sleeper,
     )
 }

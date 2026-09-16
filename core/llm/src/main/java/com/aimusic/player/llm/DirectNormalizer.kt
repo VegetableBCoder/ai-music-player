@@ -76,3 +76,9 @@ class DirectNormalizer(
 
 /** 只有 openai 方言有 JSON mode 这一档（spec §4 表；anthropic 走 tools、responses 走 text.format）。 */
 internal fun protocolSupportsJsonMode(kind: ProtocolKind): Boolean = kind == ProtocolKind.OPENAI
+
+/** 便捷构造：由协议层自己建 HTTP client，免得数据层还要认识 OkHttp。 */
+fun directNormalizer(
+    configProvider: LlmConfigProvider,
+    promptBuilder: PromptBuilder,
+): DirectNormalizer = DirectNormalizer(configProvider, OkHttpClient(), promptBuilder)
