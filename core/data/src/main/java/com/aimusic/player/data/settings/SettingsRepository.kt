@@ -31,6 +31,10 @@ data class AppSettings(
     val llmModel: String?,
     val llmSupportsJsonSchema: Boolean,
     val llmMaxRetries: Int,
+    val llmMaxTokens: Int,
+    val llmConnectTimeoutMs: Long,
+    val llmReadTimeoutMs: Long,
+    val llmBatchSize: Int,
     val permissionHintShown: Boolean,
     val scanMinDurationMs: Long,
     val scanMinSizeBytes: Long,
@@ -93,6 +97,10 @@ class SettingsRepository(
             llmModel = prefs[KEY_LLM_MODEL],
             llmSupportsJsonSchema = prefs[KEY_LLM_JSON_SCHEMA] ?: false,
             llmMaxRetries = prefs[KEY_LLM_MAX_RETRIES] ?: DEFAULT_MAX_RETRIES,
+            llmMaxTokens = prefs[KEY_LLM_MAX_TOKENS] ?: DEFAULT_MAX_TOKENS,
+            llmConnectTimeoutMs = prefs[KEY_LLM_CONNECT_TIMEOUT_MS] ?: DEFAULT_CONNECT_TIMEOUT_MS,
+            llmReadTimeoutMs = prefs[KEY_LLM_READ_TIMEOUT_MS] ?: DEFAULT_READ_TIMEOUT_MS,
+            llmBatchSize = prefs[KEY_LLM_BATCH_SIZE] ?: DEFAULT_BATCH_SIZE,
             permissionHintShown = prefs[KEY_PERMISSION_HINT] ?: false,
             scanMinDurationMs = prefs[KEY_SCAN_MIN_DURATION] ?: DEFAULT_SCAN_MIN_DURATION_MS,
             scanMinSizeBytes = prefs[KEY_SCAN_MIN_SIZE] ?: DEFAULT_SCAN_MIN_SIZE_BYTES,
@@ -132,6 +140,10 @@ class SettingsRepository(
         model: String?,
         supportsJsonSchema: Boolean,
         maxRetries: Int,
+        maxTokens: Int,
+        connectTimeoutMs: Long,
+        readTimeoutMs: Long,
+        batchSize: Int,
     ) {
         dataStore.edit { prefs ->
             provider?.let { prefs[KEY_LLM_PROVIDER] = it }
@@ -139,6 +151,10 @@ class SettingsRepository(
             model?.let { prefs[KEY_LLM_MODEL] = it }
             prefs[KEY_LLM_JSON_SCHEMA] = supportsJsonSchema
             prefs[KEY_LLM_MAX_RETRIES] = maxRetries
+            prefs[KEY_LLM_MAX_TOKENS] = maxTokens
+            prefs[KEY_LLM_CONNECT_TIMEOUT_MS] = connectTimeoutMs
+            prefs[KEY_LLM_READ_TIMEOUT_MS] = readTimeoutMs
+            prefs[KEY_LLM_BATCH_SIZE] = batchSize
         }
     }
 
@@ -166,6 +182,12 @@ class SettingsRepository(
          */
         const val DEFAULT_MAX_RETRIES = 3
 
+        // spec §12 要求的四项（`03 §6` 已登记这些键，Phase 2c 当时没落）
+        const val DEFAULT_MAX_TOKENS = 8_192
+        const val DEFAULT_CONNECT_TIMEOUT_MS = 15_000L
+        const val DEFAULT_READ_TIMEOUT_MS = 90_000L
+        const val DEFAULT_BATCH_SIZE = 20
+
         /**
          * 扫描过滤默认阈值（需求 `../需求文档/01-歌曲库管理.md` §2.5，**两条默认开启**）。
          * `0` 表示不启用；UI 上「关掉这条规则」写的就是 0。
@@ -180,6 +202,10 @@ class SettingsRepository(
         private val KEY_LLM_MODEL = stringPreferencesKey("llm_model")
         private val KEY_LLM_JSON_SCHEMA = booleanPreferencesKey("llm_supports_json_schema")
         private val KEY_LLM_MAX_RETRIES = intPreferencesKey("llm_max_retries")
+        private val KEY_LLM_MAX_TOKENS = intPreferencesKey("llm_max_tokens")
+        private val KEY_LLM_CONNECT_TIMEOUT_MS = longPreferencesKey("llm_connect_timeout_ms")
+        private val KEY_LLM_READ_TIMEOUT_MS = longPreferencesKey("llm_read_timeout_ms")
+        private val KEY_LLM_BATCH_SIZE = intPreferencesKey("llm_batch_size")
         private val KEY_PERMISSION_HINT = booleanPreferencesKey("permission_hint_shown")
         private val KEY_SCAN_MIN_DURATION = longPreferencesKey("scan_min_duration_ms")
         private val KEY_SCAN_MIN_SIZE = longPreferencesKey("scan_min_size_bytes")
