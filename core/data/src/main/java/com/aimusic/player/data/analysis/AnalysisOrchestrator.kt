@@ -12,7 +12,10 @@ import com.aimusic.player.llm.NormalizeRequest
 import androidx.room.withTransaction
 import com.aimusic.player.storage.FileRef
 import com.aimusic.player.storage.MetadataReader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -82,6 +85,7 @@ class AnalysisOrchestrator(
         var failed = 0
         var lastEmit = 0L
 
+        try {
         publish(AnalysisProgress.Started(runId, total))
         stateFlow.update {
             it.copy(running = true, runId = runId, total = total, done = 0, ok = 0, failed = 0, aborted = false)
@@ -123,6 +127,10 @@ class AnalysisOrchestrator(
                         val entityId = db.withTransaction {
                             db.songDao().attachAnalysisResult(file.id, outcome.result, now())
                             db.analysisRunDao().bumpAnalyzedOk(runId)
+                            // 状态也要落库：T3 只发布了 LINKED 事件却没写状态，
+                            // 而 pendingForAnalysis() 不认 ANALYZING（也不算 pending），于是测试全绿、
+                            // 实际文件一直停在 ANALYZING —— T5 的取消用例把我回退成 UNANALYZED 才照出来。
+                            db.musicFileDao().setStatus(file.id, AnalysisStatus.LINKED, null, null)
                             db.musicFileDao().entityIdOf(file.id)
                         }
                         ok++
@@ -175,6 +183,26 @@ class AnalysisOrchestrator(
         db.analysisRunDao().finish(runId, RunStatus.COMPLETED, now())
         stateFlow.update { it.copy(running = false) }
         publish(AnalysisProgress.Finished(runId, ok, failed, aborted = false))
+        } catch (e: CancellationException) {
+            // 取消不是错误（05 §5.3）：把本批仍在 ANALYZING 的文件退回 UNANALYZED，不置 FAILED。
+            // NonCancellable：收尾本身必须跑完 —— 否则会留下"running=true、状态 RUNNING"的僵尸会话。
+            withContext(NonCancellable) {
+                // 直接回退"当前仍停在 ANALYZING 的文件"，而不是按 runId 关联查 ——
+                // 编排器并不负责写 analysis_run_file（那是建批次方的事），按 runId 查会查空。
+                // 单 worker 下"当前 ANALYZING"就是"本次没跑完的"，语义等价且不依赖关联表。
+                db.musicFileDao().allByStatus(AnalysisStatus.ANALYZING).forEach {
+                    db.musicFileDao().setStatus(it.id, AnalysisStatus.UNANALYZED, null, null)
+                }
+                db.analysisRunDao().finish(runId, RunStatus.ABORTED, now())
+                stateFlow.update { it.copy(running = false, aborted = true, retrying = null) }
+                // 只发**热**镜像：此刻冷流正在取消，向它 emit 会触发 Flow invariant 违例
+                // （concurrent emissions are prohibited）。热镜像存在的意义正是在这里。
+                progressSink.tryEmit(AnalysisProgress.Finished(runId, ok, failed, aborted = true))
+            }
+            throw e
+        } finally {
+            runningJob = null
+        }
     }.flowOn(Dispatchers.IO)
 
     /** I4 兜底：`pendingForAnalysis` 已经过滤过，这里再挡一次（并发写入下不能只靠一处）。 */

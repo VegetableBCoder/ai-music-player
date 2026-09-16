@@ -83,4 +83,5 @@ abstract class MusicFileDao {
     /** 按分析状态取文件（测试与「最近分析记录」页用）。 */
     @Query("SELECT * FROM music_file WHERE analysis_status = :status")
     abstract suspend fun allByStatus(status: AnalysisStatus): List<MusicFileEntity>
+
 }

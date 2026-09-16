@@ -20,7 +20,11 @@ import com.aimusic.player.llm.NormalizeOutcome
 import com.aimusic.player.llm.NormalizeRequest
 import com.aimusic.player.storage.MetadataReader
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
@@ -29,7 +33,7 @@ import org.junit.runner.RunWith
 
 /** 记录每次收到的请求，按预设脚本逐个回答。 */
 private class FakeNormalizer(
-    private val answer: (List<NormalizeRequest>) -> List<NormalizeOutcome>,
+    private val answer: suspend (List<NormalizeRequest>) -> List<NormalizeOutcome>,
 ) : LlmNormalizer {
     val calls = mutableListOf<List<NormalizeRequest>>()
 
@@ -90,10 +94,11 @@ class AnalysisOrchestratorTest {
         }
     }
 
-    private fun build(normalizer: LlmNormalizer) = AnalysisOrchestrator(
+    private fun build(normalizer: LlmNormalizer, batchSize: Int = 20) = AnalysisOrchestrator(
         db = db,
         metadataReader = MetadataReader { AudioMetadata(null, null, null, null, null, 0L, false) },
         normalizer = normalizer,
+        batchSize = batchSize,
     )
 
     private fun successFor(name: String) = NormalizeOutcome.Success(
@@ -222,5 +227,57 @@ class AnalysisOrchestratorTest {
             assertThat(db.musicFileDao().allByStatus(AnalysisStatus.FAILED).single().errorKind)
                 .isEqualTo(FailureKind.PARSE.name)
         }
+    }
+
+    @Test
+    fun `中途取消_第k个回UNANALYZED_run为ABORTED_且收到Finished_aborted`() {
+        runBlocking {
+            givenPendingFiles(3)
+            givenCategory("音乐类型")
+            givenTag("流行", "音乐类型")
+            val gate = CompletableDeferred<Unit>()
+            var calls = 0
+            val fake = FakeNormalizer { reqs ->
+                // 按**调用次数**卡住而不是按文件名：pendingForAnalysis() 的顺序未定义，
+                // 假设"某个文件先被处理"会让用例随机红（首版就是这么红的）。
+                calls++
+                if (calls >= 2) {
+                    gate.await()   // 永不返回，等测试取消
+                }
+                reqs.map { successFor(it.fileName) }
+            }
+            val orchestrator = build(fake, batchSize = 1)   // 每文件一批，便于定位第 k 个
+            val runId = db.analysisRunDao().createRun(AnalysisRunEntity(status = RunStatus.RUNNING, startedAt = 0L))
+
+            val finished = mutableListOf<AnalysisProgress>()
+            val watcher = launch(Dispatchers.Default) {
+                orchestrator.progress.collect { if (it is AnalysisProgress.Finished) finished += it }
+            }
+            val worker = launch(Dispatchers.Default) { orchestrator.analyzePending(runId).collect {} }
+
+            // 等"第 2 次调用已发出"，而不是等"有文件处于 ANALYZING" ——
+            // 后者在第 1 个文件刚被置为 ANALYZING 时就满足，会在它分析完之前就取消，
+            // 于是连它也被回退成 UNANALYZED（首版即如此，断言 3 vs 2）。
+            awaitUntil { fake.calls.size >= 2 }
+            orchestrator.cancel()
+            worker.join()
+
+            val run = db.analysisRunDao().latest()!!
+            assertThat(run.status).isEqualTo(RunStatus.ABORTED)
+            assertThat(run.finishedAt).isNotNull()
+            assertThat(db.musicFileDao().allByStatus(AnalysisStatus.UNANALYZED)).hasSize(2)  // f2 + f3
+            assertThat(db.musicFileDao().allByStatus(AnalysisStatus.LINKED)).hasSize(1)      // f1 不回滚
+            assertThat((finished.single() as AnalysisProgress.Finished).aborted).isTrue()
+            watcher.cancel()
+        }
+    }
+
+    private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
+            delay(10)
+        }
+        throw AssertionError("等待条件超时（${timeoutMs}ms）")
     }
 }
