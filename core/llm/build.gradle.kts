@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -28,4 +29,11 @@ dependencies {
     implementation(project(":core:common"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Phase 4-1：协议编解码是纯函数，mockwebserver 只给 DirectProvider 的真实网络测试用
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.okhttp)
+
+    testImplementation(project(":core:testing"))
+    testImplementation(libs.okhttp.mockwebserver)
 }
