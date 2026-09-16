@@ -91,4 +91,15 @@ class ErrorTextTest {
         assertThat(ErrorText.resolve("search.empty"))
             .isEqualTo("未找到与「{query}」相关的内容")
     }
+
+    @Test
+    fun `逐行状态键都能取到非 unknown 文案`() {
+        val unknown = ErrorText.resolve(null)
+        listOf(
+            "analysis.row.pending", "analysis.row.analyzing", "analysis.row.linked",
+            "analysis.row.failed", "analysis.row.retrying",
+        ).forEach { key ->
+            assertThat(ErrorText.resolve(key)).isNotEqualTo(unknown)
+        }
+    }
 }

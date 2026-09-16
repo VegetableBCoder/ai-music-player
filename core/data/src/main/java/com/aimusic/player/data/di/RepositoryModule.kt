@@ -36,6 +36,7 @@ import com.aimusic.player.llm.directNormalizer
 import com.aimusic.player.llm.prompt.PromptBuilder
 import com.aimusic.player.llm.prompt.PromptResources
 import com.aimusic.player.data.analysis.AnalysisOrchestrator
+import com.aimusic.player.data.analysis.AnalysisRunRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -92,6 +93,10 @@ object RepositoryModule {
         // 冷 Flow 由应用级作用域独占驱动：界面离开也不影响它跑完；界面看 state / progress 两个热镜像。
         scope.launch { orchestrator.analyzePending(runId).collect {} }
     }
+
+    @Provides
+    @Singleton
+    fun provideAnalysisRunRepository(db: MusicDatabase): AnalysisRunRepository = AnalysisRunRepository(db)
 
     @Provides
     @Singleton

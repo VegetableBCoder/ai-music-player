@@ -16,6 +16,12 @@ object ErrorText {
     private val PLACEHOLDER = Regex("""\{(\w+)\}""")
 
     private val texts: Map<String, String> = mapOf(
+        // 逐行状态短标签（需求 00 §4.3 / 05 §2 原文，决定 #4：文案只取自需求文档）
+        "analysis.row.pending" to "未分析",
+        "analysis.row.analyzing" to "分析中",
+        "analysis.row.linked" to "已关联",
+        "analysis.row.failed" to "分析失败",
+        "analysis.row.retrying" to "重试中",
         // —— 扫描 / 权限（05 §1、05 §7）——
         "scan.need_source" to "请先选择要扫描的音乐来源（目录）",
         "perm.read_media.denied" to "需要「读取媒体」权限才能扫描本地音乐",
