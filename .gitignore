@@ -19,3 +19,12 @@ captures/
 
 # 系统
 .DS_Store
+
+# 本地密钥与临时模型配置（绝不入库）
+.env
+.env.*
+!.env.example
+
+# CommandCode 工具目录
+.reasonix
+reasonix.toml
