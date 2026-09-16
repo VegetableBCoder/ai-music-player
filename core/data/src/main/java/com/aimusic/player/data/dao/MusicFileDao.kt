@@ -79,4 +79,8 @@ abstract class MusicFileDao {
 
     @Query("SELECT COUNT(*) FROM music_file WHERE entity_id = :entityId")
     abstract suspend fun countForEntity(entityId: Long): Int
+
+    /** 按分析状态取文件（测试与「最近分析记录」页用）。 */
+    @Query("SELECT * FROM music_file WHERE analysis_status = :status")
+    abstract suspend fun allByStatus(status: AnalysisStatus): List<MusicFileEntity>
 }

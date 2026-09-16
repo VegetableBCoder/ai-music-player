@@ -1,5 +1,6 @@
 package com.aimusic.player.llm
 
+import com.aimusic.player.common.error.FailureKind
 import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
 
@@ -29,4 +30,21 @@ fun LlmHttpResult.toFailureKind(): LlmFailureKind? = when (this) {
         401, 403 -> LlmFailureKind.AUTH
         else -> LlmFailureKind.SERVER
     }
+}
+
+/**
+ * `LlmFailureKind`（LLM 内部的失败类别）→ `FailureKind`（全项目统一的失败类别，`05 §6`）。
+ *
+ * 命名成 `asFailureKind` 而不是 `toFailureKind`：后者已被 `LlmHttpResult.toFailureKind()` 占用，
+ * 同名重载容易读错（返回类型也不同）。
+ *
+ * 映射规则（`05 §6`）：`INVALID_OUTPUT → PARSE`（模型给的 JSON 不合规算解析失败）、
+ * `TIMEOUT → NETWORK`（超时在用户看来就是网络问题），其余同名。
+ */
+fun LlmFailureKind.asFailureKind(): FailureKind = when (this) {
+    LlmFailureKind.INVALID_OUTPUT -> FailureKind.PARSE
+    LlmFailureKind.TIMEOUT -> FailureKind.NETWORK
+    LlmFailureKind.NETWORK -> FailureKind.NETWORK
+    LlmFailureKind.AUTH -> FailureKind.AUTH
+    LlmFailureKind.SERVER -> FailureKind.SERVER
 }

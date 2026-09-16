@@ -11,8 +11,10 @@ import com.aimusic.player.data.entity.AnalysisRunEntity
 import com.aimusic.player.data.entity.CategoryEntity
 import com.aimusic.player.data.entity.MusicFileEntity
 import com.aimusic.player.data.entity.TagEntity
+import com.aimusic.player.common.error.FailureKind
 import com.aimusic.player.data.model.AnalysisStatus
 import com.aimusic.player.data.model.RunStatus
+import com.aimusic.player.llm.LlmFailureKind
 import com.aimusic.player.llm.LlmNormalizer
 import com.aimusic.player.llm.NormalizeOutcome
 import com.aimusic.player.llm.NormalizeRequest
@@ -177,5 +179,48 @@ class AnalysisOrchestratorTest {
         db.tagDao().insertTagIgnoring(
             TagEntity(name = name, categoryId = db.categoryDao().categoryIdByName(category)!!, createdAt = 0L),
         )
+    }
+
+    @Test
+    fun `调用失败_整批20个都FAILED且error_kind为NETWORK`() {
+        runBlocking {
+            givenPendingFiles(20)
+            val fake = FakeNormalizer { reqs ->
+                reqs.map { NormalizeOutcome.Failure(LlmFailureKind.NETWORK, java.io.IOException("boom")) }
+            }
+            val runId = db.analysisRunDao().createRun(AnalysisRunEntity(status = RunStatus.RUNNING, startedAt = 0L))
+
+            build(fake).analyzePending(runId).toList()
+
+            assertThat(db.analysisRunDao().latest()!!.failedCount).isEqualTo(20)
+            val failedFiles = db.musicFileDao().allByStatus(AnalysisStatus.FAILED)
+            assertThat(failedFiles).hasSize(20)
+            assertThat(failedFiles.map { it.errorKind }.toSet()).containsExactly(FailureKind.NETWORK.name)
+        }
+    }
+
+    @Test
+    fun `条目级解析失败_只连坐那一个_其余照常LINKED`() {
+        runBlocking {
+            givenPendingFiles(3)
+            givenCategory("音乐类型")
+            givenTag("流行", "音乐类型")
+            val fake = FakeNormalizer { reqs ->
+                reqs.mapIndexed { i, r ->
+                    if (i == 1) NormalizeOutcome.Failure(LlmFailureKind.INVALID_OUTPUT, null)
+                    else successFor(r.fileName)
+                }
+            }
+            val runId = db.analysisRunDao().createRun(AnalysisRunEntity(status = RunStatus.RUNNING, startedAt = 0L))
+
+            build(fake).analyzePending(runId).toList()
+
+            val run = db.analysisRunDao().latest()!!
+            assertThat(run.analyzedOk).isEqualTo(2)
+            assertThat(run.failedCount).isEqualTo(1)
+            // INVALID_OUTPUT → PARSE（05 §6）
+            assertThat(db.musicFileDao().allByStatus(AnalysisStatus.FAILED).single().errorKind)
+                .isEqualTo(FailureKind.PARSE.name)
+        }
     }
 }

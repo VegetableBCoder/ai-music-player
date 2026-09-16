@@ -2,10 +2,12 @@ package com.aimusic.player.data.analysis
 
 import com.aimusic.player.data.db.MusicDatabase
 import com.aimusic.player.data.entity.MusicFileEntity
+import com.aimusic.player.common.error.FailureKind
 import com.aimusic.player.data.model.AnalysisStatus
 import com.aimusic.player.data.model.RunStatus
 import com.aimusic.player.llm.LlmNormalizer
 import com.aimusic.player.llm.NormalizeOutcome
+import com.aimusic.player.llm.asFailureKind
 import com.aimusic.player.llm.NormalizeRequest
 import androidx.room.withTransaction
 import com.aimusic.player.storage.FileRef
@@ -130,7 +132,35 @@ class AnalysisOrchestrator(
                             ),
                         )
                     }
-                    else -> failed++   // Task 4 处理细节
+                    is NormalizeOutcome.RateLimited -> {
+                        // 429 退避耗尽：这是"限流"，不是解析失败
+                        db.musicFileDao().setStatus(
+                            file.id, AnalysisStatus.FAILED,
+                            FailureKind.RATE_LIMIT.name, FailureKind.RATE_LIMIT.name,
+                        )
+                        db.analysisRunDao().bumpFailed(runId)
+                        failed++
+                        publish(
+                            AnalysisProgress.FileUpdated(
+                                file.id, file.fileName, AnalysisStatus.FAILED,
+                                error = FailureKind.RATE_LIMIT.name,
+                            ),
+                        )
+                    }
+                    is NormalizeOutcome.Failure -> {
+                        // 整批同命运由上游保证（spec §9.1：调用失败时每一项都是同一个 Failure）；
+                        // 编排器只逐文件落库，不按文件重发。
+                        val fk = outcome.kind.asFailureKind()
+                        db.musicFileDao().setStatus(file.id, AnalysisStatus.FAILED, fk.name, fk.name)
+                        db.analysisRunDao().bumpFailed(runId)
+                        failed++
+                        publish(
+                            AnalysisProgress.FileUpdated(
+                                file.id, file.fileName, AnalysisStatus.FAILED, error = fk.name,
+                            ),
+                        )
+                    }
+                    null -> failed++
                 }
                 done++
                 stateFlow.update { it.copy(done = done, ok = ok, failed = failed) }
