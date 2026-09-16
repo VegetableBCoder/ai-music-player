@@ -12,7 +12,7 @@ package com.aimusic.player.llm
  * 实现由设置层提供（P4 的 DataStore + ApiKeyStore）。在那之前 Hilt 图里挂的是一段**空值**桥接，
  * 只保证图可编译可启动，**不能真发请求** —— 别拿空 key 去排查"请求为什么失败"。
  */
-interface LlmConfigProvider {
+fun interface LlmConfigProvider {
 
     fun current(): LlmConfig
 }
