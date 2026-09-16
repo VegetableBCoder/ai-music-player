@@ -1488,3 +1488,77 @@ Co-authored-by: CommandCodeBot <noreply@commandcode.ai>"
 
 5. **`result_json` 序列化格式与位置**：`03` 未定。本计划在 `:core:data` 内用 `org.json` 手写（不引新依赖），round-trip 由 androidTest 钉住；备选是在 `:core:common` 给 `NormalizeResult` 加 `@Serializable`。
 6. **`LlmConfig` 的来源**：Task 7 的 Hilt provider 需要 `LlmConfig`（含 `model` / `maxRetries`）；其归属（`SettingsRepository.llmConfig()` 还是 P1 的配置类型）仍待 P1/P2 拍板。`BackoffEvent` 字段形状已由本计划定为 `(attempt: Int, delayMs: Long)`（Task 5）。
+
+---
+
+### Task 8: Hilt 接线 —— 把 `DirectProvider` / `PromptBuilder` / `LlmConfig` 接进图
+
+> **新增于执行期（2026-09-15）**。T7 末尾那段 `RepositoryModule` 片段的注释写着
+> "`direct` / `promptBuilder` / `config` 由 P1/P2 各自的 Hilt 绑定提供" ——
+> 执行到 T6 时核实：**P1 与 P2 都没有建过这些绑定**。不补这一节，片段一拼进去就是红树。
+
+**Files:**
+- Modify: `core/data/build.gradle.kts`（加 `implementation(project(":core:llm"))` —— 守卫白名单已放开）
+- Modify: `core/data/src/main/java/com/aimusic/player/data/di/RepositoryModule.kt`（拼接 T7 的片段 + 本节绑定）
+- Create: `core/llm/src/main/java/com/aimusic/player/llm/LlmConfigProvider.kt`
+- Test: 无单测；**验证 = `:app:assembleDebug` 绿**（Hilt 在编译期校验整张图，比任何单测都硬）
+
+**Interfaces（本节把"谁提供、谁消费"定死）:**
+
+| 类型 | 提供方 | 构造依赖 |
+| --- | --- | --- |
+| `PromptResources` | `@Provides`（无依赖） | 无 |
+| `ProtocolAdapter` | `@Provides` | `ProtocolKind` + `JsonEnforcementPolicy`（都从 `LlmConfig` 推） |
+| `OkHttpClient` | `@Provides` `@Singleton` | 默认超时（见下方"鸡与蛋"） |
+| `DirectProvider` | `@Provides` | `OkHttpClient` + `ProtocolAdapter` |
+| `PromptBuilder` | `@Provides` | `PromptResources` + `maxTagsPerCategory` |
+| `LlmConfigProvider` | **接口在本节定义，实现由 P4 的设置层提供** | `ApiKeyStore` + DataStore |
+| `Sleeper` | `@Provides` `@Singleton` | `RealSleeper` |
+
+```kotlin
+package com.aimusic.player.llm
+
+/**
+ * 运行时配置的**取值入口**。
+ *
+ * 为什么不让 `LlmConfig` 直接进 Hilt 图：它是**运行时可变的**（设置页随时改协议/模型/key/超时），
+ * 建成单例会在改设置后继续用旧值；而它一旦可变，`OkHttpClient`（要超时）、`ProtocolAdapter`（要协议与能力位）
+ * 这些"建一次用很久"的依赖就没法在构造期拿到它 —— 会绕成循环依赖。
+ * 所以：这些组件注入 [LlmConfigProvider]，在**每次调用时**取当前配置。
+ */
+interface LlmConfigProvider {
+    fun current(): LlmConfig
+}
+```
+
+**鸡与蛋（必须按此解）:**
+`OkHttpClient` 的超时、`ProtocolAdapter` 的方言与能力位，都要从 `LlmConfig` 取值；而 `LlmConfig` 来自设置层（P4）。
+按上表把 `LlmConfigProvider` 注入进 `DirectProvider`，`OkHttpClient` 用**默认超时**建一次即可
+（改超时就重建 client 不划算；真要支持，later 再谈）。
+
+**P4 未落地前的桥接（临时，必须显式标注）:**
+`LlmConfig` 的取值实现要等 P4 的设置页（DataStore + `ApiKeyStore`）。在它存在之前，本节提供：
+
+```kotlin
+@Provides
+@Singleton
+fun provideLlmConfigProvider(): LlmConfigProvider = LlmConfigProvider {
+    LlmConfig(
+        protocol = ProtocolKind.OPENAI,
+        baseUrl = "",            // 空 = 尚未配置
+        model = "",
+        apiKey = "",             // 空 = 尚未配置；绝不留任何真实 key 在代码里
+        supportsJsonSchema = false,
+    )
+}
+```
+
+**这个桥接的价值是让 Hilt 图可编译、可启动；它不能用来真发请求**（baseUrl 与 key 都是空的）。
+P4 落地设置页时应**替换**这个绑定，而不是在旁边再加一个（两个 `@Provides` 会撞成 duplicate binding）。
+
+- [ ] **Step 1** 建 `LlmConfigProvider.kt`（上面那段）
+- [ ] **Step 2** `core/data/build.gradle.kts` 加 `:core:llm` 依赖
+- [ ] **Step 3** 拼接 T7 的 `RepositoryModule` 片段 + 上表全部绑定（含临时的 `LlmConfigProvider`）
+- [ ] **Step 4** 验证：`./gradlew -Dhttp.nonProxyHosts='*' -Dhttps.nonProxyHosts='*' :app:assembleDebug`
+      预期 `BUILD SUCCESSFUL` —— Hilt 会在这里校验整张图（缺绑定 / 循环依赖 / 重复绑定都在这一步报出来）
+- [ ] **Step 5** 提交
