@@ -1,0 +1,28 @@
+{
+  "type": "object", "additionalProperties": false, "required": ["results"],
+  "properties": {
+    "results": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["file_index", "canonical_title", "artists", "tag_groups"],
+        "properties": {
+          "file_index":      { "type": "integer", "minimum": 1 },
+          "canonical_title": { "type": "string" },
+          "artists":         { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "tag_groups": {
+            "type": "array",
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["category", "tags"],
+              "properties": {
+                "category": { "type": "string", "enum": ["{{categories}}"] },
+                "tags":     { "type": "array", "minItems": 1, "items": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
