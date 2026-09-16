@@ -159,9 +159,11 @@ object RepositoryModule {
     /** ⚠ 临时桥接：P4 设置页落地前配置取不到真值（baseUrl/key 全空）——只保证图可启动，不能真发请求。P4 落地时**替换**本绑定。 */
     @Provides
     @Singleton
-    fun provideLlmConfigProvider(): LlmConfigProvider = LlmConfigProvider {
-        LlmConfig(protocol = ProtocolKind.OPENAI, baseUrl = "", model = "", apiKey = "", supportsJsonSchema = false)
-    }
+    fun provideLlmConfigProvider(
+        settings: SettingsRepository,
+        apiKeyStore: ApiKeyStore,
+        @ApplicationScope scope: CoroutineScope,
+    ): LlmConfigProvider = SettingsLlmConfigProvider(settings, apiKeyStore, scope)
 
     @Provides
     @Singleton
