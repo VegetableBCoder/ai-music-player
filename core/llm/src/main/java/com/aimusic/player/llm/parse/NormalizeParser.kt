@@ -93,7 +93,6 @@ class NormalizeParser(
             List(size) { NormalizeOutcome.Failure(kind, null) }
     }
 
-    // parseOne 在 Task 8 补齐 tag_groups 摊平；本任务先让标题 / 歌手两条判定生效。
     private fun parseOne(obj: JsonObject, req: NormalizeRequest): NormalizeOutcome {
         val rawTitle = (obj["canonical_title"] as? JsonPrimitive)?.content
         if (rawTitle.isNullOrBlank()) {
@@ -112,6 +111,35 @@ class NormalizeParser(
             return NormalizeOutcome.Failure(LlmFailureKind.INVALID_OUTPUT, MissingField("artists"))
         }
 
-        return NormalizeOutcome.Success(NormalizeResult(title, artists, emptyList<TagAssignment>()))
+        // tag_groups：逐组判分类 → 组内逐条判名字；摊平成 TagAssignment（spec §7）
+        val validCategories = req.categories.toSet()
+        val assignments = mutableListOf<TagAssignment>()
+        for (group in (obj["tag_groups"] as? JsonArray).orEmpty()) {
+            val groupObject = group as? JsonObject
+            if (groupObject == null) {
+                warn("drop tag group: 元素不是 JSON 对象")
+                continue
+            }
+            val category = (groupObject["category"] as? JsonPrimitive)?.content?.trim()
+            if (category == null || category !in validCategories) {
+                warn("drop tag group: category '$category' 不在当前有效分类")   // 整组丢弃
+                continue
+            }
+            for (tag in (groupObject["tags"] as? JsonArray).orEmpty()) {
+                val name = (tag as? JsonPrimitive)?.content?.trim()
+                if (name.isNullOrEmpty()) {
+                    warn("drop tag: 名字为空")                                  // 丢该条
+                    continue
+                }
+                assignments += TagAssignment(category, name)
+            }
+        }
+
+        // 每分类数量上限兜底（prompt 已约束，此处防御）：组内去重后 take(n)
+        val capped = assignments
+            .groupBy { it.category }
+            .flatMap { (_, list) -> list.distinctBy { it.name }.take(maxTagsPerCategory) }
+
+        return NormalizeOutcome.Success(NormalizeResult(title, artists, capped))
     }
 }

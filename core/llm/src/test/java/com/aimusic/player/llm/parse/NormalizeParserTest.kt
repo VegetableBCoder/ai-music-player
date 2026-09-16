@@ -1,6 +1,7 @@
 package com.aimusic.player.llm.parse
 
 import com.aimusic.player.common.model.NormalizeResult
+import com.aimusic.player.common.model.TagAssignment
 import com.aimusic.player.llm.LlmFailureKind
 import com.aimusic.player.llm.NormalizeOutcome
 import com.aimusic.player.llm.NormalizeRequest
@@ -156,5 +157,73 @@ class NormalizeParserTest {
     fun `tag_groups 缺失视为合法，得到空标签`() {
         val json = """{"results":[{"file_index":1,"canonical_title":"甲","artists":["x"]}]}"""
         assertThat(succeed(parser.parse(json, listOf(request("a.flac"))).single()).tagAssignments).isEmpty()
+    }
+
+    @Test
+    fun `分组结构摊平成多条 TagAssignment`() {
+        val json = """{"results":[{"file_index":1,"canonical_title":"晴天","artists":["周杰伦"],
+            "tag_groups":[{"category":"音乐类型","tags":["流行","摇滚"]},{"category":"情绪","tags":["怀旧"]}]}]}"""
+
+        val result = succeed(parser.parse(json, listOf(request("a.flac"))).single())
+
+        assertThat(result.tagAssignments).containsExactly(
+            TagAssignment("音乐类型", "流行"),
+            TagAssignment("音乐类型", "摇滚"),
+            TagAssignment("情绪", "怀旧"),
+        ).inOrder()
+    }
+
+    @Test
+    fun `无效分类整组丢弃，不算失败`() {
+        val json = """{"results":[{"file_index":1,"canonical_title":"甲","artists":["x"],
+            "tag_groups":[{"category":"自造分类","tags":["野标签"]},{"category":"情绪","tags":["怀旧"]}]}]}"""
+
+        val result = succeed(parser.parse(json, listOf(request("a.flac"))).single())
+
+        assertThat(result.tagAssignments).containsExactly(TagAssignment("情绪", "怀旧"))
+        assertThat(logger.warnings.any { it.contains("自造分类") }).isTrue()
+    }
+
+    @Test
+    fun `标签名为空丢该条，其余照常`() {
+        val json = """{"results":[{"file_index":1,"canonical_title":"甲","artists":["x"],
+            "tag_groups":[{"category":"情绪","tags":["怀旧","","   "]}]}]}"""
+
+        val result = succeed(parser.parse(json, listOf(request("a.flac"))).single())
+
+        assertThat(result.tagAssignments).containsExactly(TagAssignment("情绪", "怀旧"))
+    }
+
+    @Test
+    fun `同分类超上限按 take 截断`() {
+        val json = """{"results":[{"file_index":1,"canonical_title":"甲","artists":["x"],
+            "tag_groups":[{"category":"音乐类型","tags":["流行","摇滚","电子","古典"]}]}]}"""
+
+        val result = succeed(parser.parse(json, listOf(request("a.flac"))).single())
+
+        assertThat(result.tagAssignments).containsExactly(
+            TagAssignment("音乐类型", "流行"),
+            TagAssignment("音乐类型", "摇滚"),
+        ).inOrder()
+    }
+
+    @Test
+    fun `组内重复标签去重后再截断`() {
+        val json = """{"results":[{"file_index":1,"canonical_title":"甲","artists":["x"],
+            "tag_groups":[{"category":"音乐类型","tags":["流行","流行","摇滚","电子"]}]}]}"""
+
+        val result = succeed(parser.parse(json, listOf(request("a.flac"))).single())
+
+        assertThat(result.tagAssignments).containsExactly(
+            TagAssignment("音乐类型", "流行"),
+            TagAssignment("音乐类型", "摇滚"),
+        ).inOrder()
+    }
+
+    @Test
+    fun `tag_groups 为空数组是合法的（0 标签）`() {
+        val json = """{"results":[${item(1)}]}"""
+        val result = succeed(parser.parse(json, listOf(request("a.flac"))).single())
+        assertThat(result.tagAssignments).isEmpty()
     }
 }
