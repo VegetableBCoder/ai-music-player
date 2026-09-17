@@ -131,7 +131,10 @@ class FileStorageSource(
 
     private fun isSystemDir(dir: File): Boolean {
         if (dir.name in SYSTEM_DIR_NAMES) return true
-        val path = dir.absolutePath
+        // 黑名单字面用正斜杠（`04 §4.3`），但 `absolutePath` 的分隔符是**宿主平台相关**的
+        // （Windows 给反斜杠），直接 endsWith("/Android/data") 在非 Unix 宿主上永不命中。
+        // 比较前统一成正斜杠：这里只做**前缀归类**，不产生写库用的路径（那个走 PathNormalizer）。
+        val path = dir.absolutePath.replace('\\', '/')
         return SYSTEM_DIR_SUFFIXES.any { path.endsWith(it) }
     }
 

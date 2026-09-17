@@ -215,8 +215,9 @@ class FileStorageSourceTest {
         val ref = refs.single()
 
         // 遍历阶段给的是磁盘上的绝对路径（规范化在 §4.5 流水线里做），
-        // 所以这里只要求「规范化之后同键」，不要求字面相等（临时目录本身可能是软链）
-        assertThat(ref.path).endsWith("Music/a.mp3")
+        // 所以这里只要求「规范化之后同键」，不要求字面相等（临时目录本身可能是软链）。
+        // 分隔符统一成正斜杠再比：`absolutePath` 的分隔符是宿主平台相关的（Windows 给 "\"）。
+        assertThat(ref.path.replace('\\', '/')).endsWith("Music/a.mp3")
         assertThat(PathNormalizer.normalize(ref.path, temp.root.absolutePath))
             .isEqualTo(PathNormalizer.normalize(file.absolutePath, temp.root.absolutePath))
         assertThat(ref.name).isEqualTo("a.mp3")
