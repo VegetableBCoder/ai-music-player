@@ -48,3 +48,36 @@ curl -x http://127.0.0.1:7890 -o /dev/null -w '%{http_code}\n' https://services.
   `adb shell input keyevent KEYCODE_WAKEUP`，否则 MIUI 会报 `INSTALL_FAILED_USER_RESTRICTED`，
   那看着像权限问题，其实只是屏幕黑着。
 - 无线调试的端口每次重启都变，别把端口写死。
+
+### Compose UI 测试在 MIUI 上会「假死」——必须用 `tools/run-device-tests.sh`
+
+当前设备是小米 `24117RK2CC`（zorn，**Android 16 / SDK 36**）。在这台机器上直接跑
+`./gradlew :feature:mine:connectedDebugAndroidTest` 会**永远卡在 `0/23 completed`**：
+测试进程活着、`EspressoLink` idling resource 已注册，但前台始终是 launcher，logcat 里
+`ActivityManagerWrapper` 每 1~3 秒重试启动一次 `androidx.activity.ComponentActivity` 且一直失败。
+（`core:data` / `core:storage` 不受影响 —— 它们的测试不起 Activity。）
+
+**根因**：`createComposeRule` 需要一个宿主 Activity（由 `ui-test-manifest` 提供
+`androidx.activity.ComponentActivity`）。在 Android 16 上这属于**后台启动 Activity（BAL）**，
+MIUI 用专有 appops **`MIUIOP(10021)`［后台弹出界面］** 拦掉。诊断命令：
+
+```bash
+adb shell cmd appops get com.aimusic.player.mine.test 10021
+# ignore; rejectTime=... ← rejectTime 与测试时段吻合即命中此问题
+```
+
+**关键坑**：`connectedDebugAndroidTest` **每次都会重装 APK**，而 MIUI 会把该包的 appops
+重置回 `ignore` —— 所以「先设权限、再跑 Gradle」**没有用**。必须在 APK 装好之后、
+**不过 Gradle** 地直接 `am instrument`：
+
+```bash
+tools/run-device-tests.sh                  # 全部模块
+tools/run-device-tests.sh :feature:mine    # 单模块
+```
+
+脚本做的事：唤醒设备 + 常亮 → Gradle 只负责 `installDebug`/`installDebugAndroidTest`
+→ 放开 10020/10021/10022 → `am instrument` → 复核权限未被重置（被重置则该模块结果不可信）。
+实测三模块 172 条全绿（`OK (6)` / `OK (143)` / `OK (23)`）。
+
+另注：`connectedAndroidTest` **不支持 `--tests`**（那是 JVM 单测的选项），按类名过滤要用
+`-e class <全限定类名>` 传给 instrumentation；脚本第二个参数即是。
