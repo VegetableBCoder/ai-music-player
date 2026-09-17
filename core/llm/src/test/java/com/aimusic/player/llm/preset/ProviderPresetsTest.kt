@@ -29,4 +29,12 @@ class ProviderPresetsTest {
         }
         assertThat(allText.filter { it.contains("sk-") }).isEmpty()
     }
+
+    @Test
+    fun `每条都带取值依据_sourceNote 是 http 链接`() {
+        // spec §14 把预设取值列为"由用户提供"：填进来的人必须留下**到哪里核对的**，
+        // 否则后来者只能凭印象猜这些值是不是编的（本表首条的 model 名就差点被误判成编的）。
+        assertThat(ProviderPresets.ALL.filterNot { it.sourceNote.startsWith("http") }.map { it.id })
+            .isEmpty()
+    }
 }
