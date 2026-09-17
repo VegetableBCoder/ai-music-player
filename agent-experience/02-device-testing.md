@@ -93,6 +93,68 @@ adb shell cmd appops get com.aimusic.player.mine.test 10021   # 期望 allow
 - **首次安装可能瞬时失败**：MIUI 首次安装会弹确认。重跑一次即可（实测第二次成功）。
 - **无线调试端口每次重启都变**，别把端口写死。
 
+### 3.1 手工验收：**必须换掉输入法**，否则 `input text` 写的值会被联想坏
+
+**症状**：用 `adb shell input text "https://..."` 填表单，落进输入框的却是
+`https：、、。从难道的。唉、provides、他` 这种中文联想垃圾 —— 界面看起来"填了"，值却是错的。
+
+**根因**：设备默认输入法是 `com.iflytek.inputmethod/.FlyIME`（讯飞）或搜狗，
+它们的**联想/候选**会改写 `input text` 注入的英文字符（`//` → `、`，`api` → `provides` 之类）。
+
+**做法**：切到设备上装好的 AdbKeyboard（本项目真机已装），它不联想、逐字符直传：
+
+```bash
+adb shell ime list -a -s                      # 找 com.android.adbkeyboard/.AdbIME
+adb shell ime enable com.android.adbkeyboard/.AdbIME
+adb shell ime set   com.android.adbkeyboard/.AdbIME
+adb shell settings get secure default_input_method   # 复核已切换
+
+# 之后用广播输入（能正确处理 : / . - 等任意字符）
+adb shell am broadcast -a ADB_INPUT_TEXT --es msg "https://example.com/"
+```
+
+**复核**：`adb shell uiautomator dump` 后 grep `EditText` 的 `text=`，**逐项核对**内容 ——
+不要凭"按钮点下去了"就认为填对了。
+
+### 3.2 手工验收：改已有文本要先全选清空
+
+`input text` 是**追加**不是替换。清空用：
+
+```bash
+adb shell input keycombination 113 29   # Ctrl+A
+adb shell input keyevent KEYCODE_DEL
+```
+
+### 3.3 手工验收：点「分析并添加」别点到「放弃」
+
+扫描结果页底部两个并排按钮，几何靠近、极易点错：
+
+```
+[45,2040][528,2175]     「分析并添加」→ 中心 x≈286
+[551,2040][1035,2175]   「放弃」       → 中心 x≈793
+```
+
+点错的表现很隐蔽：界面**重置回初始态**（提交按钮消失），库里 0 行 —— 看着像"提交了但没效果"。
+**判据**：点完应跳到「最近分析记录」页并出现逐文件行；没跳就是点错了。
+
+### 3.4 取证：设备上没有 `sqlite3`，要把库拉回本地查
+
+`adb shell run-as <pkg> sqlite3 …` 会报 `Permission denied`（MIUI 不提供该二进制）。改拉文件：
+
+```bash
+mkdir -p /tmp/aimpull && cd /tmp/aimpull
+for f in ai_music_player.db ai_music_player.db-wal ai_music_player.db-shm; do
+  adb exec-out "run-as com.aimusic.player cat databases/$f" > "$f"
+done
+```
+
+**关键**：查之前先 `PRAGMA wal_checkpoint(FULL)`。Room 开的是 WAL，刚写的行还在 `-wal` 里，
+4096 字节的主库直接查会**什么都查不到**（这不是"没写入"，是没合并）。
+
+```python
+c = sqlite3.connect('ai_music_player.db'); c.execute('PRAGMA wal_checkpoint(FULL)')
+```
+
 ## 4. 实测基线（2026-09）
 
 | 模块 | 用例 | 结果 |
