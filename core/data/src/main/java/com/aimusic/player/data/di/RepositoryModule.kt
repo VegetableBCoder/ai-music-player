@@ -3,6 +3,10 @@ package com.aimusic.player.data.di
 import android.content.Context
 import com.aimusic.player.data.db.MusicDatabase
 import com.aimusic.player.data.deletion.DeletionService
+import com.aimusic.player.data.repository.LibraryRepository
+import com.aimusic.player.data.repository.LibraryRepositoryImpl
+import com.aimusic.player.data.repository.TagRepository
+import com.aimusic.player.data.repository.TagRepositoryImpl
 import com.aimusic.player.data.scan.AnalysisTrigger
 import com.aimusic.player.data.scan.LyricHandoff
 import com.aimusic.player.data.scan.ScanOrchestrator
@@ -77,6 +81,20 @@ object RepositoryModule {
     @Singleton
     fun provideDeletionService(db: MusicDatabase, storage: StorageSource): DeletionService =
         DeletionService(db, storage)
+
+    /**
+     * 库 / 标签仓储（`06 §3.3` / `§3.4`）。
+     *
+     * Phase 5 起由界面层注入（`09 §3.3.1` 的 `LibrarySongsViewModel` 等）—— 此前只有
+     * `ScanOrchestrator` 间接用到数据层，这两个仓储从未进过 Hilt 图，故当时没绑。
+     */
+    @Provides
+    @Singleton
+    fun provideLibraryRepository(db: MusicDatabase): LibraryRepository = LibraryRepositoryImpl(db)
+
+    @Provides
+    @Singleton
+    fun provideTagRepository(db: MusicDatabase): TagRepository = TagRepositoryImpl(db)
 
     /**
      * 交棒接口在 Phase 3 是**空实现**：真实的分析器（`05`）与歌词匹配（`08`）还不存在。

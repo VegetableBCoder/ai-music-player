@@ -6,9 +6,12 @@ import com.aimusic.player.common.model.NormalizeResult
 /**
  * 标签引用 —— **`:core:llm` 契约专用的两字段形态**（`05 §3.1` 锁定）。
  *
- * ⚠ 与 `:core:common` 里那个三字段 `TagRef(name, categoryId, categoryName)` **不是一回事**：
- * 后者按决定 #3 应改名为 `TagProjection`（文档侧已改，代码侧尚未落地 —— 见待办）。
- * 两者同名不同形，读到这里别顺手合并。
+ * 与列表 / 详情那边的 `TagProjection(name, categoryId, categoryName)` **同名不同形**：
+ * 因依赖守卫禁止 `:core:llm → :core:data`，本类型拿不到 `categoryId`，故只带分类名。
+ * 读到这里别顺手合并 —— 两者的类别名与用途都不同。
+ *
+ * （历史上 `:core:common` 里也曾有一个三字段的 `TagRef`，与本文同名同类，极易混淆；
+ * 按 `02 §5.3` 决定 #3 它已改名 `TagProjection` 并移入 `:core:data`。）
  */
 data class TagRef(val name: String, val category: String)
 

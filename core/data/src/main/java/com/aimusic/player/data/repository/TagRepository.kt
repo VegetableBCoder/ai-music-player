@@ -1,11 +1,11 @@
 package com.aimusic.player.data.repository
 
-import com.aimusic.player.common.model.TagRef
 import com.aimusic.player.data.error.AddTagResult
 import com.aimusic.player.data.error.DeleteCategoryResult
 import com.aimusic.player.data.error.DeleteTagResult
 import com.aimusic.player.data.model.CategoryListItem
 import com.aimusic.player.data.model.TagListItem
+import com.aimusic.player.data.model.TagProjection
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -21,7 +21,7 @@ interface TagRepository {
     fun observeTags(categoryId: Long): Flow<List<TagListItem>>
 
     /** 批量取标签并**按实体分组**，供列表页一次装配（避免 N+1）。 */
-    fun observeTagsOfSongs(entityIds: List<Long>, onlyMain: Boolean): Flow<Map<Long, List<TagRef>>>
+    fun observeTagsOfSongs(entityIds: List<Long>, onlyMain: Boolean): Flow<Map<Long, List<TagProjection>>>
 
     /** 仅「分类 & 标签」页使用。 */
     fun searchTags(query: String): Flow<List<TagListItem>>

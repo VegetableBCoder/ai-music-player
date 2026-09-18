@@ -24,7 +24,7 @@ data class TagListItem(
     val songCount: Int,
 )
 
-/** 批量取若干实体的标签：一条关联一行，由 Repository 组合成 `Map<entityId, List<TagRef>>`。 */
+/** 批量取若干实体的标签：一条关联一行，由 Repository 组合成 `Map<entityId, List<TagProjection>>`。 */
 data class EntityTagRow(
     val entityId: Long,
     val name: String,

@@ -1,6 +1,5 @@
 package com.aimusic.player.data.model
 
-import com.aimusic.player.common.model.TagRef
 import com.aimusic.player.data.entity.LyricEntity
 import com.aimusic.player.data.entity.SongEntity
 
@@ -14,7 +13,7 @@ data class SongListItem(
     val albumArtist: String?,
     val coverCachePath: String?,
     /** **仅主要分类下**的标签（I6） */
-    val tags: List<TagRef>,
+    val tags: List<TagProjection>,
     /** 派生：存在可用文件。不落库，避免脏字段（`03 §5`）。 */
     val isPlayable: Boolean,
 )
@@ -24,7 +23,7 @@ data class SongDetail(
     val entity: SongEntity,
     val artists: List<String>,
     /** **完整标签**（不按主要分类折叠，供详情/播放页） */
-    val tags: List<TagRef>,
+    val tags: List<TagProjection>,
     val lyric: LyricEntity?,
     /** 管理的文件列表，按 size DESC，代表文件置顶 */
     val files: List<MusicFileItem>,
@@ -69,7 +68,16 @@ data class SongFilter(
     val titleQuery: String? = null,
     /** 按歌词筛选：仅保留**已关联歌词**的歌曲 */
     val hasLyricOnly: Boolean = false,
-)
+) {
+    /**
+     * 是否「没有施加任何筛选」。
+     *
+     * 界面用它区分列表的两种空态（`09 §5.1`）：无筛选而空 → 库空，引导去扫描；
+     * 有筛选而空 → 无命中，引导清除筛选。**判据必须与 [SongQueryBuilder] 的实际过滤条件一致** ——
+     * 那边对 `titleQuery` 是先 `takeIf { it.isNotBlank() }`，故这里空白串也算未筛选。
+     */
+    val isEmpty: Boolean get() = titleQuery.isNullOrBlank() && !hasLyricOnly
+}
 
 /** 可播性批量查询的行：实体 id + 其可用文件数。 */
 data class EntityPlayableRow(

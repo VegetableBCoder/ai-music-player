@@ -1,12 +1,12 @@
 package com.aimusic.player.data.repository
 
-import com.aimusic.player.common.model.TagRef
 import com.aimusic.player.data.db.MusicDatabase
 import com.aimusic.player.data.error.AddTagResult
 import com.aimusic.player.data.error.DeleteCategoryResult
 import com.aimusic.player.data.error.DeleteTagResult
 import com.aimusic.player.data.model.CategoryListItem
 import com.aimusic.player.data.model.TagListItem
+import com.aimusic.player.data.model.TagProjection
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -31,11 +31,11 @@ class TagRepositoryImpl(
     override fun observeTagsOfSongs(
         entityIds: List<Long>,
         onlyMain: Boolean,
-    ): Flow<Map<Long, List<TagRef>>> {
+    ): Flow<Map<Long, List<TagProjection>>> {
         if (entityIds.isEmpty()) return flowOf(emptyMap())
 
         return tagDao.observeTagsOfSongs(entityIds, onlyMain).map { rows ->
-            rows.groupBy({ it.entityId }) { TagRef(it.name, it.categoryId, it.categoryName) }
+            rows.groupBy({ it.entityId }) { TagProjection(it.name, it.categoryId, it.categoryName) }
         }
     }
 

@@ -1,6 +1,5 @@
 package com.aimusic.player.data.repository
 
-import com.aimusic.player.common.model.TagRef
 import com.aimusic.player.data.db.MusicDatabase
 import com.aimusic.player.data.entity.SongEntity
 import com.aimusic.player.data.model.AlbumListItem
@@ -10,6 +9,7 @@ import com.aimusic.player.data.model.SongFilter
 import com.aimusic.player.data.model.SongListItem
 import com.aimusic.player.data.model.SongScope
 import com.aimusic.player.data.model.SongSort
+import com.aimusic.player.data.model.TagProjection
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -24,6 +24,9 @@ import kotlinx.coroutines.flow.flowOf
  *
  * Step 1 取实体行（带排序 / 筛选 / 维度）→ Step 2 批量取可播性 → Step 3 批量取标签，
  * 在 `combine` 里合并成 `SongListItem`。标签用 `onlyMain = true`（I6）。
+ *
+ * 标签投影是 `TagProjection`（`:core:data` 自己的三字段类型），**不是** `:core:llm` 契约里
+ * 那个两字段 `TagRef` —— 两者同名不同形，详见 `TagProjection` 的 KDoc。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class LibraryRepositoryImpl(private val db: MusicDatabase) : LibraryRepository {
@@ -74,7 +77,7 @@ class LibraryRepositoryImpl(private val db: MusicDatabase) : LibraryRepository {
                         entity = entity,
                         artists = artists.map { it.name },
                         // 详情要**完整标签**，不按主要分类折叠
-                        tags = tags.map { TagRef(it.name, it.categoryId, it.categoryName) },
+                        tags = tags.map { TagProjection(it.name, it.categoryId, it.categoryName) },
                         lyric = lyric,
                         files = files,
                         representativeFileId = files.firstOrNull { it.isRepresentative }?.fileId,
@@ -94,7 +97,7 @@ class LibraryRepositoryImpl(private val db: MusicDatabase) : LibraryRepository {
         ) { playable, tagRows, artistRows ->
             val playableIds = playable.mapTo(HashSet()) { it.entityId }
             val tagsByEntity = tagRows.groupBy({ it.entityId }) {
-                TagRef(it.name, it.categoryId, it.categoryName)
+                TagProjection(it.name, it.categoryId, it.categoryName)
             }
             val artistsByEntity = artistRows.groupBy({ it.entityId }, { it.name })
 

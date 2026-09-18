@@ -18,16 +18,7 @@ data class NormalizeResult(
 /** (分类, 标签名)。分类不在当前有效集合中时由数据层丢弃（AI 不得新建分类）。 */
 data class TagAssignment(val category: String, val name: String)
 
-/**
- * 标签引用 —— **全项目唯一的标签展示类型**。
- *
- * `06 §3.1` 明确要求它与 `02 §5.3` 同构、「避免第二套命名」，因此 LLM 侧的
- * `NormalizeRequest.tags` 与列表投影共用这一个类型。
- *
- * 比 `02 §5.3` 原稿多出 `categoryId`：列表与筛选需要按分类定位，只靠分类名不便关联。
- */
-data class TagRef(
-    val name: String,
-    val categoryId: Long,
-    val categoryName: String,
-)
+// 注：三字段的「标签引用投影」原本也叫 `TagRef` 放在这里，但它其实只被 `:core:data` 与上层 UI 消费，
+// 与归一化无关，且与 `:core:llm` 契约里的两字段 `TagRef` 同名不同形（本文件此前还自称
+// 「全项目唯一的标签展示类型」，与该同名者直接矛盾）。按 `02 §5.3` 决定 #3，它已改名为
+// `TagProjection` 并移入 `:core:data`（`com.aimusic.player.data.model.TagProjection`）。

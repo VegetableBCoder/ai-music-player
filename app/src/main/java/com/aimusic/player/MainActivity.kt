@@ -6,8 +6,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
+import androidx.compose.ui.unit.dp
 import com.aimusic.player.navigation.AppNavHost
 import com.aimusic.player.permission.PermissionChecker
 import dagger.hilt.android.AndroidEntryPoint
@@ -38,17 +39,17 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestMultiplePermissions(),
                 ) { }
 
-                Scaffold { innerPadding ->
-                    AppNavHost(
-                        innerPadding = innerPadding,
-                        onRequestAllFilesAccess = {
-                            startActivity(permissionChecker.allFilesAccessIntent())
-                        },
-                        onRequestMediaPermission = {
-                            mediaPermissionLauncher.launch(permissionChecker.mediaPermissions())
-                        },
-                    )
-                }
+                // Scaffold 不在这里：底部导航与 mini 条要跟着导航图决定显隐（`09 §4.4`），
+                // 故由 AppNavHost 自己持有 Scaffold。这里再套一层会出现双份内边距。
+                AppNavHost(
+                    innerPadding = PaddingValues(0.dp),
+                    onRequestAllFilesAccess = {
+                        startActivity(permissionChecker.allFilesAccessIntent())
+                    },
+                    onRequestMediaPermission = {
+                        mediaPermissionLauncher.launch(permissionChecker.mediaPermissions())
+                    },
+                )
             }
         }
     }
