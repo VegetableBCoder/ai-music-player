@@ -47,4 +47,14 @@ dependencies {
 
     // 多选态 / 面板裁剪是纯 Kotlin 逻辑，用 JVM 单测钉住（`09 §8`）
     testImplementation(project(":core:testing"))
+    // SongRow 的渲染测试跑真机 androidTest（`09 §8`），与 feature:mine 的 ScanContentTest
+    // 同一套做法。组件在自己的模块里被测，归属最清楚。
+    // 本模块**不需要 Hilt**：被测的都是无状态 Composable，不吃注入。
+    androidTestImplementation(project(":core:testing"))
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    // createComposeRule 需要一个宿主 Activity，由它提供（只在 debug 变体里）
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

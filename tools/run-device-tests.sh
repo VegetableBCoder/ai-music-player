@@ -41,8 +41,8 @@ if ! adb shell getprop ro.product.model >/dev/null 2>&1; then
   exit 1
 fi
 
-MODULES=("${MODULE:-:core:storage}" "${MODULE:-:core:data}" "${MODULE:-:feature:mine}")
-# 去重（单模块时上面会重复三次）
+MODULES=("${MODULE:-:core:storage}" "${MODULE:-:core:data}" "${MODULE:-:core:ui}" "${MODULE:-:feature:mine}")
+# 去重（单模块时上面会重复若干次）
 if [[ -n "$MODULE" ]]; then MODULES=("$MODULE"); fi
 
 # 2. 先让 Gradle 把 APK 装好（这一步会重置 appops，所以权限要在它之后设）
@@ -53,13 +53,17 @@ for m in "${MODULES[@]}"; do GRADLE_TASKS+=("${m}:installDebug" "${m}:installDeb
 
 FAILED=0
 for m in "${MODULES[@]}"; do
-  # namespace 即测试包名前缀：com.aimusic.player.<module> → <namespace>.test
-  case "$m" in
-    :core:storage) NS="com.aimusic.player.storage" ;;
-    :core:data)    NS="com.aimusic.player.data" ;;
-    :feature:mine) NS="com.aimusic.player.mine" ;;
-    *) echo "未知模块 $m（请在脚本里补 namespace）" >&2; continue ;;
-  esac
+  # namespace 即测试包名前缀：<namespace>.test
+  # **从模块自己的 build.gradle.kts 里读**，而不是维护一张硬编码表 ——
+  # 表的缺点是每新增一个（可测的）模块都要回来补一行，否则会以「未知模块」静默跳过，
+  # 看起来像「跑过了、没问题」。Task 2.1 给 :core:ui 加 androidTest 时就撞上了这一点。
+  mod_path="${m#:}"; mod_path="${mod_path//://}"
+  gradle_file="${mod_path}/build.gradle.kts"
+  NS="$(sed -nE 's/^[[:space:]]*namespace[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$gradle_file" 2>/dev/null | head -1)"
+  if [[ -z "$NS" ]]; then
+    echo "未知模块 $m（读不到 $gradle_file 里的 namespace）" >&2
+    continue
+  fi
   TEST_PKG="${NS}.test"
 
   # 3. 关键一步：放开 MIUI 的后台弹窗拦截（10021）。必须紧挨着 instrument，
@@ -71,7 +75,14 @@ for m in "${MODULES[@]}"; do
 
   echo "== $m（测试包 $TEST_PKG）=="
   ARGS=(-w -r)
-  if [[ -n "$CLASS_FILTER" ]]; then ARGS+=(-e class "${NS}.${CLASS_FILTER}"); fi
+  if [[ -n "$CLASS_FILTER" ]]; then
+    # 类名可能不在 namespace 的根包下（如 :core:ui 的测试在 .component 子包）。
+    # 含点号即视为**完整类名**，否则按根包下的类名补全。
+    case "$CLASS_FILTER" in
+      *.*) ARGS+=(-e class "$CLASS_FILTER") ;;
+      *)   ARGS+=(-e class "${NS}.${CLASS_FILTER}") ;;
+    esac
+  fi
   adb shell am instrument "${ARGS[@]}" "${TEST_PKG}/${RUNNER}" 2>&1 \
     | grep -aE "OK \(|FAILURES|Tests run|Error|INSTRUMENTATION_CODE|junit\." || true
 

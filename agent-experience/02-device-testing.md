@@ -155,12 +155,76 @@ done
 c = sqlite3.connect('ai_music_player.db'); c.execute('PRAGMA wal_checkpoint(FULL)')
 ```
 
-## 4. 实测基线（2026-09）
+## 4. 从 Windows 的 PowerShell 跑脚本：两个必踩的坑（2026-09-18 补）
+
+**症状一**：`bash tools/run-device-tests.sh` 报
+
+```
+wsl: 检测到 localhost 代理配置，但未镜像到 WSL。NAT 模式下的 WSL 不支持 localhost 代理。
+<3>WSL (10 - Relay) ERROR: CreateProcessCommon:818: execvpe(/bin/bash) failed: No such file or directory
+```
+
+**根因**：PowerShell 里裸写 `bash` 解析到的是 `C:\Windows\System32\bash.exe` —— 它是
+**WSL 的入口**，不是 Git Bash。本机没装 WSL 发行版，于是 `execvpe(/bin/bash)` 找不到。
+报错里那句「localhost 代理配置」是 WSL 自己的提示，**与代理无关**，别顺着它去改代理。
+
+**做法**：用 Git Bash 的**绝对路径**（本机是 PortableGit）：
+
+```powershell
+& "D:\Program Files\PortableGit\bin\bash.exe" tools/run-device-tests.sh :core:ui SongRowTest
+```
+
+> 别硬编码路径，先定位：
+> `Get-ChildItem "D:\Program Files\PortableGit\bin\bash.exe","C:\Program Files\Git\bin\bash.exe" -ErrorAction SilentlyContinue`
+
+**症状二**：脚本第一步就报 `没有可用设备（adb devices 为空）`，但 PowerShell 里 `adb devices` 正常。
+
+**根因**：`adb` 在 PowerShell 的 PATH 里（来自 Android SDK），而 **Git Bash 继承的是它自己的
+PATH**，不含 `platform-tools`。脚本内部直接调 `adb`，于是全部失败 —— 那句提示指向"设备问题"，
+实际是**找不到 adb 命令**（脚本把 `adb shell getprop` 的失败当成了"没有设备"）。
+
+**做法**：跑脚本前把 `platform-tools` 塞进本次会话的 PATH：
+
+```powershell
+$env:PATH = "C:\Users\huwansong\AppData\Local\Android\Sdk\platform-tools;" + $env:PATH
+& "D:\Program Files\PortableGit\bin\bash.exe" tools/run-device-tests.sh :core:ui SongRowTest
+```
+
+**复核**（先确认 bash 与 adb 都真找得到，再跑整套）：
+
+```powershell
+& "D:\Program Files\PortableGit\bin\bash.exe" -c "which adb && adb devices"
+# 期望：/c/.../platform-tools/adb  +  83695e  device
+```
+
+**环境**：Windows + PowerShell 7 + PortableGit + 无 WSL 发行版。
+在 Linux / macOS / WSL 下这两个坑都不存在（那时裸写 `bash` 就是对的）。
+
+### ⚠️ 2026-09-18 修正：脚本的模块表与类名补全（已改脚本，不再需要手工绕）
+
+两个原以为要手工处理、现已修进 `tools/run-device-tests.sh` 的点：
+
+1. **模块 → namespace 曾是一张硬编码表**，新增可测模块（如给 `:core:ui` 加 androidTest）时
+   会以「未知模块 :core:ui（请在脚本里补 namespace）」**静默 `continue`** ——
+   看起来像"跑过了、没问题"。现改为 `sed` 读该模块 `build.gradle.kts` 的 `namespace`。
+2. **类名过滤曾假定测试类在 namespace 根包下**（`-e class "${NS}.${CLASS_FILTER}"`）。
+   `:core:ui` 的测试在 `com.aimusic.player.ui.component` 子包，于是
+   `SongRowTest` 被拼成 `com.aimusic.player.ui.SongRowTest` → `ClassNotFoundException`。
+   现改为：**`CLASS_FILTER` 含点号即视为完整类名**，否则才补 namespace 前缀。
+
+```bash
+# 两种写法都支持
+bash tools/run-device-tests.sh :core:ui SongRowTest
+bash tools/run-device-tests.sh :core:ui com.aimusic.player.ui.component.SongRowTest
+```
+
+## 5. 实测基线（2026-09）
 
 | 模块 | 用例 | 结果 |
 | --- | --- | --- |
 | `:core:storage` | 6 | `OK (6 tests)` |
 | `:core:data` | 143 | `OK (143 tests)` |
 | `:feature:mine` | 23 | `OK (23 tests)` |
+| `:core:ui` | 4 | `OK (4 tests)`（2026-09-18 新增，`SongRowTest`） |
 
-共 **172 条**全绿。类名过滤（`OK (1 test)`）亦通过。
+共 **176 条**全绿。类名过滤亦通过。
