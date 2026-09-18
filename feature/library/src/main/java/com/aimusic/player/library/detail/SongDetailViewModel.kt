@@ -108,8 +108,30 @@ class SongDetailViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 文件列表的勾选（勾选 = `fileId`）。
+     *
+     * 判定基准取 `state.value.multiSelect`（只有它带 `selectableIds` = 当前文件集）——
+     * 拿 `multi.value` 去 toggle 会因 `selectableIds` 恒为空而静默失效。
+     * 理由详见 `LibrarySongsViewModel.toggleSelect` 的 KDoc。
+     */
     fun onToggleFileSelect(fileId: Long) {
-        multi.value = multi.value.toggle(fileId)
+        val applied = state.value.multiSelect.toggle(fileId)
+        multi.value = multi.value.copy(selectedIds = applied.selectedIds)
+    }
+
+    /** 全选只作用于当前文件集。 */
+    fun selectAllFiles() {
+        val applied = state.value.multiSelect.selectAll()
+        multi.value = multi.value.copy(selectedIds = applied.selectedIds)
+    }
+
+    fun enterMultiSelect(seed: Long? = null) {
+        multi.value = MultiSelectState<Long>(isActive = true, selectedIds = setOfNotNull(seed))
+    }
+
+    fun exitMultiSelect() {
+        multi.value = MultiSelectState<Long>()
     }
 
     fun onOpenTagEditor() {

@@ -218,13 +218,91 @@ bash tools/run-device-tests.sh :core:ui SongRowTest
 bash tools/run-device-tests.sh :core:ui com.aimusic.player.ui.component.SongRowTest
 ```
 
-## 5. 实测基线（2026-09）
+## 5. 两个只有真机才暴露的**测试自身**缺陷（2026-09-18 补）
+
+这两条都不是产品代码的问题，而是**测试写错了还一路绿**。共同特征是：**编译通过、跑起来也不报错**，
+只有「真机 + 变异抽查」才能发现。
+
+### 5.1 `RoomDatabase.QueryCallback` 会把 Room 自己的内部语句也算进来
+
+**症状**：用查询回调数「业务查询条数」来防 N+1，在真机上得到
+`forOne=34` vs `forTwenty=48` —— 看起来像 N+1，其实不是。
+
+**根因**：回调报上来的**不只有业务 SQL**，还有 Room 失效追踪的基础设施：
+
+```
+CREATE TEMP TRIGGER IF NOT EXISTS `room_table_modification_trigger_music_file_IN…`
+DROP TRIGGER IF EXISTS `room_table_modification_trigger_song_artist_INSERT`
+INSERT OR IGNORE INTO room_table_modification_log VALUES(…)
+BEGIN IMMEDIATE TRANSACTION / END TRANSACTION
+```
+
+这些**随被观察的表集变化而增减**（列表从 1 首到 20 首，涉及的表不同 → trigger 重建次数不同），
+与业务查询无关。真正的业务查询稳定是 3 条（Step 1 取实体 + Step 2 可播性 + Step 3 标签/歌手名）。
+
+**做法**：只统计业务 `SELECT`，把内部机制过滤掉：
+
+```kotlin
+private fun isBusinessQuery(sql: String): Boolean {
+    val s = sql.trimStart()
+    if (!s.startsWith("SELECT", ignoreCase = true)) return false
+    return !s.contains("room_table_modification", ignoreCase = true) &&
+        !s.contains("room_master_table", ignoreCase = true)
+}
+```
+
+**另加两条断言**（缺了任一条都可能假绿 / 假红）：
+- **`forOne > 0`**：否则回调没生效时 `0 == 0` 恒真。
+- **`recorded.containsNoDuplicates()`**：这才是 N+1 的**直接**特征（同一条 SQL 被执行 N 次）。
+  不要比对 SQL 字面是否逐字相同 —— 批量查询的 `IN (?, ?, …)` 会随 id 数量变化，
+  那是**参数个数**差异，不是 N+1（我第一版就是这么误判的，真机上红了才知道）。
+
+**复核**：变异抽查 —— 把 `assemble()` 的批量可播性查询改成逐行
+（`combine(ids.map { dao.observePlayableCounts(listOf(it)) })`），期望 `expected: 4 but was : 23`。
+
+### 5.2 夹具漏建关联表 → 断言退化成「1 == 1」恒真
+
+**症状**：歌手维度的防 N+1 用例**永远绿**，连变异抽查都抓不出来
+（把批量改成逐行，它照样绿）。
+
+**根因**：歌手维度查的是 **`song_artist` 关联表**
+（`SongQueryBuilder`：`EXISTS (SELECT 1 FROM song_artist a WHERE a.entity_id = s.id AND a.artist_name = ?)`），
+而 `TestDb.insertSong(artistsKey = …)` 只写 **`song_entity.artists_key`** 这一个字段。
+夹具少了关联行 → 该维度查不到任何实体 → `assemble()` 在 `entities.isEmpty()` 处提前返回 →
+只跑 1 条 SQL，`forOne == forTwenty == 1`，断言恒真。
+
+**诊断依据**（`println` 打在测试里，从 logcat 捞）：
+
+```bash
+adb logcat -d | Select-String "DIAG-ARTIST"   # forOne=1 forTwenty=1 ← 装配压根没跑
+```
+
+**做法**：夹具显式插关联行，并**断言真的查到了数据**：
+
+```kotlin
+private fun insertLinkedSong(index: Int, artist: String = "歌手$index") {
+    val songId = db.insertSong(title = "歌$index", artistsKey = artist)
+    db.exec("INSERT INTO song_artist (entity_id, artist_name, position) VALUES ($songId, '$artist', 0)")
+    …
+}
+
+// 用例里必须断言行数，否则「查不到」会伪装成「很稳定」
+assertThat(one).hasSize(1)
+assertThat(twenty).hasSize(20)
+```
+
+> **教训**：断言「两个值相等」时，先确认**这两个值真的反映了被测行为**。
+> `1 == 1` 和 `0 == 0` 是同一类陷阱：把「什么都没发生」当成「没有退化」。
+> 上面 `LibraryQueryTest` 里就有正确写法（`歌手维度只返回该歌手的歌`），照抄它即可。
+
+## 6. 实测基线（2026-09）
 
 | 模块 | 用例 | 结果 |
 | --- | --- | --- |
 | `:core:storage` | 6 | `OK (6 tests)` |
-| `:core:data` | 143 | `OK (143 tests)` |
+| `:core:data` | 145 | `OK (145 tests)`（2026-09-18 +2，`LibraryQueryCountTest` 防 N+1） |
 | `:feature:mine` | 23 | `OK (23 tests)` |
 | `:core:ui` | 4 | `OK (4 tests)`（2026-09-18 新增，`SongRowTest`） |
+| `:feature:library` | 13 | `OK (13 tests)`（2026-09-18 新增，`LibrarySongsContentTest`） |
 
-共 **176 条**全绿。类名过滤亦通过。
+共 **191 条**全绿。类名过滤亦通过。

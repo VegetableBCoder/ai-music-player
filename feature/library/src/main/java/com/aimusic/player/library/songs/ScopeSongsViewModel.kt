@@ -149,7 +149,7 @@ class ScopeSongsViewModel @Inject constructor(
 
     fun onRowClick(item: SongListItem) {
         if (multi.value.isActive) {
-            multi.value = multi.value.toggle(item.entityId)
+            toggleSelect(item.entityId)
             return
         }
         if (!item.isPlayable) {
@@ -200,8 +200,20 @@ class ScopeSongsViewModel @Inject constructor(
         }
     }
 
-    fun onToggleSelect(id: Long) {
-        multi.value = multi.value.toggle(id)
+    /**
+     * 勾选 / 取消勾选。判定基准取 `state.value.multiSelect`（只有它带 `selectableIds`）——
+     * 拿 `multi.value` 去 toggle 会因 `selectableIds` 恒为空而静默失效。理由详见
+     * `LibrarySongsViewModel.toggleSelect` 的 KDoc。
+     */
+    fun toggleSelect(id: Long) {
+        val applied = state.value.multiSelect.toggle(id)
+        multi.value = multi.value.copy(selectedIds = applied.selectedIds)
+    }
+
+    /** 全选同样以 `state.value.multiSelect` 为准（理由同 [toggleSelect]）。 */
+    fun selectAll() {
+        val applied = state.value.multiSelect.selectAll()
+        multi.value = multi.value.copy(selectedIds = applied.selectedIds)
     }
 
     fun exitMultiSelect() {

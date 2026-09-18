@@ -26,6 +26,13 @@ data class LibrarySongsUiState(
     /** 勾选 = 歌曲实体 `entityId`（`09 §3.3.1`）。 */
     val multiSelect: MultiSelectState<Long> = MultiSelectState(),
     val actionSheet: ActionSheetModel? = null,
+    /**
+     * 打开面板的那一行。
+     *
+     * `ActionSheetModel` 只有标题文本，而面板动作要落到**具体某首**上。放在 UiState 里
+     * 而不是让界面按标题反查 —— 同名歌曲（不同 albumArtist）反查会认错项。
+     */
+    val currentSheetItem: SongListItem? = null,
     val confirmation: ConfirmRequest? = null,
     /** 当前播放的实体，用于行高亮（`09 §3.2.1` 数据来源里的 `PlaybackController.state`）。 */
     val nowPlayingId: Long? = null,

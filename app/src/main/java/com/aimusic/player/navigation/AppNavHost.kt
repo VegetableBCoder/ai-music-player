@@ -5,9 +5,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.NavHostController
@@ -16,6 +20,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.aimusic.player.library.LibraryDimension
 import com.aimusic.player.library.albums.LibraryAlbumsScreen
 import com.aimusic.player.library.artists.LibraryArtistsScreen
 import com.aimusic.player.library.detail.SongDetailScreen
@@ -30,6 +35,7 @@ import com.aimusic.player.mine.analysis.AnalysisRunScreen
 import com.aimusic.player.mine.scan.ScanScreen
 import com.aimusic.player.mine.settings.SettingsScreen
 import com.aimusic.player.search.SearchScreen
+import kotlinx.coroutines.launch
 
 /**
  * 导航图（`09 §4.1`）。
@@ -50,10 +56,30 @@ fun AppNavHost(
     modifier: Modifier = Modifier,
 ) {
     val navController = rememberNavController()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    /**
+     * 维度切换（`页面设计 §2`）。
+     *
+     * 四个维度是四个平级路由，切换即导航；已在目标维度上时不重复入栈
+     * （`launchSingleTop`，与底栏同一语义）。这是**发现这三个维度的唯一入口** ——
+     * 缺了它，`ArtistsRoute` / `AlbumsRoute` / `TagsHubRoute` 就没有任何调用点。
+     */
+    val selectDimension: (LibraryDimension) -> Unit = { dimension ->
+        val route: Any = when (dimension) {
+            LibraryDimension.SONGS -> SongsRoute
+            LibraryDimension.ARTISTS -> ArtistsRoute
+            LibraryDimension.ALBUMS -> AlbumsRoute
+            LibraryDimension.TAGS -> TagsHubRoute
+        }
+        navController.navigate(route) { launchSingleTop = true }
+    }
 
     Scaffold(
         modifier = modifier.padding(innerPadding),
         bottomBar = { AppBottomBar(navController) },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { inner ->
         NavHost(
             navController = navController,
@@ -64,6 +90,9 @@ fun AppNavHost(
 
             composable<SongsRoute> {
                 LibrarySongsScreen(
+                    currentDimension = LibraryDimension.SONGS,
+                    onSelectDimension = selectDimension,
+                    snackbar = { message -> scope.launch { snackbarHostState.showSnackbar(message) } },
                     onOpenSongDetail = { navController.navigate(SongDetailRoute(it)) },
                     onNavigateToScan = { navController.navigate(ScanRoute) },
                 )
@@ -71,18 +100,21 @@ fun AppNavHost(
 
             composable<ArtistsRoute> {
                 LibraryArtistsScreen(
+                    onSelectDimension = selectDimension,
                     onOpenArtist = { navController.navigate(ArtistSongsRoute(it)) },
                 )
             }
 
             composable<AlbumsRoute> {
                 LibraryAlbumsScreen(
+                    onSelectDimension = selectDimension,
                     onOpenAlbum = { name, artist -> navController.navigate(AlbumSongsRoute(name, artist)) },
                 )
             }
 
             composable<TagsHubRoute> {
                 CategoriesScreen(
+                    onSelectDimension = selectDimension,
                     onOpenCategory = { navController.navigate(CategoryTagsRoute(it)) },
                     onOpenTag = { navController.navigate(TagSongsRoute(it)) },
                 )

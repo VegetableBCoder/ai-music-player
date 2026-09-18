@@ -60,6 +60,14 @@ class LibrarySongsViewModel @Inject constructor(
     private val filter = MutableStateFlow(SongFilter())
     private val multi = MutableStateFlow(MultiSelectState<Long>())
     private val sheet = MutableStateFlow<ActionSheetModel?>(null)
+
+    /**
+     * 打开面板时的那首歌。
+     *
+     * 面板的动作要能落到具体某首上（`onAction`），而 `ActionSheetModel` 只携带标题文本；
+     * 让 VM 在打开时记住它，比在界面侧「按标题反查」（同名歌曲会认错）可靠。
+     */
+    private val sheetItem = MutableStateFlow<SongListItem?>(null)
     private val confirm = MutableStateFlow<ConfirmRequest?>(null)
 
     private val _events = Channel<LibrarySongsEvent>(Channel.BUFFERED)
@@ -90,12 +98,13 @@ class LibrarySongsViewModel @Inject constructor(
     private data class Transient(
         val selection: MultiSelectState<Long>,
         val sheet: ActionSheetModel?,
+        val sheetItem: SongListItem?,
         val confirm: ConfirmRequest?,
     )
 
     private val transient: Flow<Transient> =
-        combine(multi, sheet, confirm) { selection, actionSheet, confirmation ->
-            Transient(selection, actionSheet, confirmation)
+        combine(multi, sheet, sheetItem, confirm) { selection, actionSheet, actionSheetItem, confirmation ->
+            Transient(selection, actionSheet, actionSheetItem, confirmation)
         }
 
     val state: StateFlow<LibrarySongsUiState> = combine(
@@ -118,6 +127,7 @@ class LibrarySongsViewModel @Inject constructor(
                 selectableIds = items.filter { it.isPlayable }.map { it.entityId }.toSet(),
             ),
             actionSheet = pending.sheet,
+            currentSheetItem = pending.sheetItem,
             confirmation = pending.confirm,
             nowPlayingId = playback.currentEntityId,
         )
@@ -174,15 +184,18 @@ class LibrarySongsViewModel @Inject constructor(
     // —— 操作面板 ————
 
     fun onOpenActionSheet(item: SongListItem) {
+        sheetItem.value = item
         sheet.value = ActionSheetModel.forSong(item)
     }
 
     fun onDismissActionSheet() {
         sheet.value = null
+        sheetItem.value = null
     }
 
     fun onAction(item: SongListItem, action: SongAction) {
         sheet.value = null
+        sheetItem.value = null
         when (action) {
             SongAction.PLAY -> onRowClick(item)
             SongAction.PLAY_NEXT -> playbackController.insertNext(item.entityId)
@@ -202,12 +215,24 @@ class LibrarySongsViewModel @Inject constructor(
         multi.value = MultiSelectState<Long>(isActive = true, selectedIds = setOfNotNull(seed))
     }
 
+    /**
+     * 勾选 / 取消勾选。
+     *
+     * **判定基准取 `state.value.multiSelect`，不是 `multi.value`** —— 只有前者带 `selectableIds`。
+     * `multi` 流按设计只承载 `selectedIds` / `isActive`（`selectableIds` 是「当前列表里可播的那些」，
+     * 每帧由列表算出，若也塞进 `multi` 就得反过来订阅列表，成环）。
+     * 而 [MultiSelectState.toggle] 内部是 `if (id in selectableIds)` —— 拿 `multi.value` 去 toggle，
+     * 那个集合恒为空，**勾选会静默失效**（这个坑踩过一次，单测 `多选态下点击行体只勾选不播放` 抓到的）。
+     */
     fun toggleSelect(id: Long) {
-        multi.value = multi.value.toggle(id)
+        val applied = state.value.multiSelect.toggle(id)
+        multi.value = multi.value.copy(selectedIds = applied.selectedIds)
     }
 
+    /** 全选同样以 `state.value.multiSelect` 为准（理由同 [toggleSelect]）。 */
     fun selectAll() {
-        multi.value = multi.value.selectAll()
+        val applied = state.value.multiSelect.selectAll()
+        multi.value = multi.value.copy(selectedIds = applied.selectedIds)
     }
 
     fun exitMultiSelect() {

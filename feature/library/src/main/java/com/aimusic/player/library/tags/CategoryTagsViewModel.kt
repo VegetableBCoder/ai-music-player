@@ -69,8 +69,33 @@ class CategoryTagsViewModel @Inject constructor(
         categoryId.value = id
     }
 
+    /**
+     * 勾选 / 取消勾选（勾选 = **标签名**，`09 §3.2.5`）。
+     *
+     * 判定基准取 `state.value.multiSelect`（只有它带 `selectableIds`）—— 拿 `multi.value` 去
+     * toggle 会因 `selectableIds` 恒为空而静默失效，「有歌的标签不可选」（I12）也就无从生效。
+     * 理由详见 `LibrarySongsViewModel.toggleSelect` 的 KDoc。
+     */
     fun onToggleSelect(name: String) {
-        multi.value = multi.value.toggle(name)
+        val applied = state.value.multiSelect.toggle(name)
+        multi.value = multi.value.copy(selectedIds = applied.selectedIds)
+    }
+
+    /** 全选只作用于可选集（即 songCount == 0 的标签）。 */
+    fun selectAll() {
+        val applied = state.value.multiSelect.selectAll()
+        multi.value = multi.value.copy(selectedIds = applied.selectedIds)
+    }
+
+    fun enterMultiSelect(seed: String? = null) {
+        multi.value = MultiSelectState<String>(
+            isActive = true,
+            selectedIds = setOfNotNull(seed),
+        )
+    }
+
+    fun exitMultiSelect() {
+        multi.value = MultiSelectState<String>()
     }
 
     fun onOpenNewTagDialog() {
