@@ -50,3 +50,18 @@ bash tools/run-device-tests.sh                  # 真机测试（不要直接跑
 > **注意**：这台机器上直接跑 `./gradlew :feature:mine:connectedDebugAndroidTest`
 > 会**永远卡在 `0/N completed`**（MIUI 拦后台弹窗）。**用 `tools/run-device-tests.sh`**，
 > 原因与排查见 [`agent-experience/02-device-testing.md`](agent-experience/02-device-testing.md)。
+
+### 真机测试数据
+
+| 用途 | 路径 | 内容 |
+| --- | --- | --- |
+| **开发/验收用**（推荐） | `/sdcard/Download/aimusic-test/` | 30 首，667 MB，手工取样 |
+| 全量素材库（**只读参考，别拿它跑测试**） | `/storage/emulated/0/下载/song/` | 1105 首，29 GB |
+
+- 取样兼顾**格式**（22 flac / 5 mp3 / 3 ogg）与**歌手/专辑多样性**，便于验证
+  四维浏览、同歌手聚合（`陈奕迅` 2 首、`梁静茹` 3 首）与排序/筛选/搜索。
+- 从素材库重新取样时**要跨歌手/专辑分散取**（`NR%N==1` 之类），
+  不要 `head -30` —— 那会全落在字母靠前的几首歌手上，维度多样性差。
+- **注意路径是中文的 `下载/song`**，不是 `Download/song`；用 `adb shell ls` 探测实际路径，
+  别照抄 Windows 资源管理器里看到的显示名。
+- Phase 5（歌曲库与标签）的四维浏览/排序/搜索验收就用 `aimusic-test/` 这 30 首。

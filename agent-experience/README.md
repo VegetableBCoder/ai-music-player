@@ -30,7 +30,7 @@
 
 | 文件 | 覆盖 |
 | --- | --- |
-| `01-build-environment.md` | 依赖下载、代理、JDK / Android SDK、Gradle wrapper |
+| `01-build-environment.md` | 依赖下载、代理（`~/.gitconfig` 那套、含 ssh 方式是否需要代理）、JDK / Android SDK、Gradle wrapper |
 | `02-device-testing.md` | 真机 androidTest（含 MIUI 后台弹窗拦截） |
 | `03-cross-platform-code.md` | 跨平台代码陷阱（文件路径、分隔符、`canonicalPath`） |
 | `04-version-control.md` | 提交信息规范、文件模式、行尾符 |
