@@ -9,7 +9,7 @@ bash tools/run-device-tests.sh                  # 真机测试（不要直接跑
 ```
 
 - Kotlin/Java 17、`compileSdk 36`、`minSdk 26`；coroutines 版本必须显式钉住。
-- **注释与提交信息一律中文**；提交尾注 `Co-authored-by: CommandCodeBot <noreply@commandcode.ai>`。
+- **注释与提交信息一律中文**
 - **文案只在 `common/error/ErrorText.kt` 里取，不得新造词面**，也不得在代码里拼文案键。
 - 不用通用 `Result` 包装：每个操作有自己的 sealed 结果，或直接返回领域类型。
 - 文档（`docs/技术方案/*`）是锁定的契约；与实现不一致时**改文档**，不能默默偏离。
